@@ -11,10 +11,14 @@ import { teamLabel } from '../../lib/constants.js';
 /** 'Jenin' -> 'jenin', 'Ramallah' -> 'ramallah'. */
 export const campusKey = (name) => String(name || '').trim().toLowerCase().replace(/\s+/g, '-');
 
+const HEBRON_MONTH = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Hebron', year: 'numeric', month: '2-digit' });
+
+/** 'YYYY-MM' of an instant in Asia/Hebron, the platform's official timezone. */
 export const monthOf = (iso) => {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  const part = (type) => HEBRON_MONTH.formatToParts(d).find((p) => p.type === type).value;
+  return `${part('year')}-${part('month')}`;
 };
 
 export function mapTeam(t, campusNameById) {

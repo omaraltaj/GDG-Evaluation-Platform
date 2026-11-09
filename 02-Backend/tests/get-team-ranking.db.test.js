@@ -176,16 +176,15 @@ test('Monthly Team leaderboard calculates correctly in PostgreSQL', {
           rows.map(row => [row.userId, row])
         );
 
-        assert.equal(rows.length, 6);
+        assert.equal(rows.length, 5);
 
         assert.deepEqual(
           [...byId.keys()].sort((a, b) => a - b),
-          [5, 6, 7, 8, 10, 11]
+          [6, 7, 8, 10, 11]
         );
 
         assert.equal(byId.get(6).totalPoints, 30);
         assert.equal(byId.get(7).totalPoints, 30);
-        assert.equal(byId.get(5).totalPoints, 20);
         assert.equal(byId.get(8).totalPoints, 20);
         assert.equal(byId.get(10).totalPoints, 0);
         assert.equal(byId.get(11).totalPoints, -5);
@@ -194,7 +193,7 @@ test('Monthly Team leaderboard calculates correctly in PostgreSQL', {
     );
 
     await t.test(
-      'ties use dense ranks and managers are included',
+      'ties use dense ranks and Managers are excluded',
       async () => {
         const rows = await getTeamRanking(
           testPool, 2, 2026, 10
@@ -206,14 +205,14 @@ test('Monthly Team leaderboard calculates correctly in PostgreSQL', {
 
         assert.equal(byId.get(6).rank, 1);
         assert.equal(byId.get(7).rank, 1);
-        assert.equal(byId.get(5).rank, 2);
+        assert.equal(byId.has(5), false);
         assert.equal(byId.get(8).rank, 2);
         assert.equal(byId.get(10).rank, 3);
         assert.equal(byId.get(11).rank, 4);
 
         assert.deepEqual(
           rows.map(row => row.rank),
-          [1, 1, 2, 2, 3, 4]
+          [1, 1, 2, 3, 4]
         );
 
         assert.equal(typeof rows[0].rank, 'number');
@@ -232,11 +231,10 @@ test('Monthly Team leaderboard calculates correctly in PostgreSQL', {
           beta.map(row => [row.userId, row])
         );
 
-        assert.equal(beta.length, 2);
+        assert.equal(beta.length, 1);
         assert.equal(byId.get(6).totalPoints, 40);
         assert.equal(byId.get(6).rank, 1);
-        assert.equal(byId.get(9).totalPoints, 0);
-        assert.equal(byId.get(9).rank, 2);
+        assert.equal(byId.has(9), false);
         assert.equal(byId.has(7), false);
       }
     );

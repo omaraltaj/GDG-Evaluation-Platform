@@ -10,6 +10,7 @@
     "test:db": "node --env-file=.env --test tests/*.test.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
+    "predev": "npm run build",
     "pretest": "npm run build",
     "pretest:db": "npm run build",
     "prestart": "npm run build"

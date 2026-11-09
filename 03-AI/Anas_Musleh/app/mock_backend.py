@@ -163,7 +163,11 @@ class MockBackend(BackendClient):
                  "activityDescription": p["activityDescription"], "reversesEntryId": p["reversesEntryId"]}
                 for p in rows]
 
-    # ---------------- PLANNED endpoints ------------------------------------------
+    def my_points_summary(self, token, month, year):
+        pts = self._points_of(self._actor(token)["id"], month, year)
+        return {"month": month, "year": year, "totalPoints": sum(p["points"] for p in pts), "entriesCount": len(pts)}
+
+    # ---------------- chatbot data endpoints --------------------------------------
     def member_points(self, token, member_name, month=None, year=None):
         a = self._actor(token)
         if a["role"] == "member":

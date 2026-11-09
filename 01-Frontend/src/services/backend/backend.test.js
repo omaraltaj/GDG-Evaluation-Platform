@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { createHttp } from '../httpCore.js';
 import { createBackend } from './client.js';
 import { translateServerError } from './errorsAr.js';
-import { weightedManagerScore } from './adapters.js';
+import { monthOf, weightedManagerScore } from './adapters.js';
 
 const json = (status, body) => ({
   ok: status >= 200 && status < 300,
@@ -100,7 +100,26 @@ function fakeServer({ me, token = 'tok-1' } = {}) {
     if ((m = p.match(/^\/api\/users\/(\d+)\/restore$/))) {
       return ok({ id: +m[1], name: 'محذوف', email: 'd@gdg.ps', role: 'member', teamId: 10, isActive: false, deletedAt: null });
     }
-    if (p === '/api/points/me') return ok(state.points);
+    if (p === '/api/points/me') {
+      const q = Object.fromEntries(u.searchParams);
+      const id = `${q.year}-${String(q.month).padStart(2, '0')}`;
+      return ok(state.points.filter((e) => e.effectiveAt.startsWith(id)));
+    }
+    if (p === '/api/points/me/summary') {
+      return ok(u.searchParams.get('month') === '10'
+        ? { total: 610, positive: 620, negative: -10, entryCount: 61, allTimeTotal: 605, rank: 2 }
+        : { total: -5, positive: 0, negative: -5, entryCount: 1, allTimeTotal: 605, rank: 4 });
+    }
+    if (p === '/api/rankings/months') return ok(['2026-08', '2026-09']);
+    if (p === '/api/rankings/public-summary') {
+      return ok({
+        campus: { id: 1, name: 'Jenin' },
+        month: '2026-10',
+        top: [{ rank: 1, name: 'ليان', totalPoints: 75 }],
+        teamLeaders: [{ teamId: 10, teamName: 'Technical', leader: { name: 'ليان', totalPoints: 75 } }],
+        participants: { rated: 3, total: 3 },
+      });
+    }
     if (p === '/api/points' && method === 'POST') {
       const allowed = ['userId', 'points', 'activityName', 'reason', 'activityDescription'];
       if (Object.keys(body).some((k) => !allowed.includes(k))) return fail(400, 'INVALID_POINT_DATA');
@@ -285,10 +304,17 @@ test('points: add sends exactly the allowed fields; reverse; my points per month
   await assert.rejects(() => s.backend.reversePoints('5x', 'a'), (e) => e.status === 400);
 
   const mine = await s.backend.myPoints('2026-10');
-  assert.equal(mine.total, 10);
+  assert.equal(mine.total, 610, 'the total comes from the SQL summary, not the listed rows');
   assert.equal(mine.entries.length, 1);
-  assert.equal(mine.rank, null);
+  assert.equal(mine.rank, 2);
   assert.equal((await s.backend.myPoints('2026-09')).negative, -5);
+});
+
+test('meta lists closed months before the open month; months follow Asia/Hebron', async () => {
+  const s = fakeServer();
+  const meta = await s.backend.meta();
+  assert.deepEqual(meta.months.map((m) => [m.id, m.status]), [['2026-08', 'archived'], ['2026-09', 'archived'], ['2026-10', 'open']]);
+  assert.equal(monthOf('2026-09-30T21:30:00Z'), '2026-10', '00:30 on 1 October in Hebron');
 });
 
 test('points: assignable members — organizer sees all active members, manager only own team', async () => {
@@ -395,13 +421,19 @@ test('leaderboard (page shape): public rankings by points, current vs archived m
   assert.equal(s.calls.at(-1).search, '?scope=campus&year=2026&month=10&campusId=1');
 });
 
-test('hall (welcome page): team leaders from public rankings, no winner / news without those services', async () => {
+test('full rankings send the signed-in token', async () => {
+  const s = fakeServer();
+  await s.backend.rankings({ scope: 'campus', campusId: '1', month: '2026-10' });
+  assert.match(s.calls.at(-1).auth, /^Bearer .+/);
+});
+
+test('hall (welcome page): team leaders from the public summary, no winner / news without those services', async () => {
   const s = fakeServer();
   const h = await s.backend.hall({ campus: 'jenin' });
   assert.equal(h.campus, 'jenin');
   assert.equal(h.groups.length, 1);
   assert.equal(h.groups[0].teamId, '10');
-  assert.deepEqual(h.groups[0].leader, { id: '200', name: 'ليان', photo: null, total: 75 });
+  assert.deepEqual(h.groups[0].leader, { id: null, name: 'ليان', photo: null, total: 75 });
   assert.equal(h.winner, null);
   assert.deepEqual(h.news, []);
   assert.equal(h.ratedCount, 3);

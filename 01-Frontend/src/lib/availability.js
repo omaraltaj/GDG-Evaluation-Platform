@@ -7,13 +7,9 @@
 export const COMING_SOON_REAL = Object.freeze([
   '/ratings',
   '/activities',
-  '/assistant',
-  '/manager',
-  '/organizer',
   '/organizer/awards',
   '/organizer/news',
   '/organizer/points',
-  '/organizer/archive',
   '/organizer/syslog',
   '/organizer/policies',
 ]);
@@ -22,7 +18,7 @@ const SET = new Set(COMING_SOON_REAL);
 
 /** True when the page exists in the UI but the real backend has no endpoint for it yet. */
 export const isComingSoon = (path, useMock) =>
-  !useMock && (SET.has(path) || String(path).startsWith('/manager/team/'));
+  !useMock && SET.has(path);
 
 // Landing page after sign-in with the real backend: a page that works there.
 const REAL_HOME = Object.freeze({

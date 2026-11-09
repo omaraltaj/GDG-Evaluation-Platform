@@ -72,11 +72,11 @@ export function createBackend(http, { now = () => new Date() } = {}) {
     },
 
     async meta() {
-      const dir = await directory();
+      const [dir, closed] = await Promise.all([directory(), http.get('/rankings/months')]);
       const cur = monthOf(now().toISOString());
       return {
         curMonth: cur,
-        months: [{ id: cur, status: 'open' }],
+        months: [...closed.map((id) => ({ id, status: 'archived' })), { id: cur, status: 'open' }],
         teams: dir.teams.map((t) => ({ id: t.id, campus: t.campus, name: t.name, status: t.status })),
         criteria: [],
       };
@@ -247,20 +247,24 @@ export function createBackend(http, { now = () => new Date() } = {}) {
       });
     },
 
-    /** Own points from GET /points/me (last 50 entries). Rank / scorecard are not available. */
+    /** Totals and rank come from SQL over the whole ledger; `entries` is only the displayed history. */
     async myPoints(month) {
       const m = month || monthOf(now().toISOString());
-      const all = (await http.get('/points/me')).map(mapPointEntry).filter((e) => e.month === m);
-      const sum = (xs) => xs.reduce((s, e) => s + e.value, 0);
+      const period = splitMonth(m);
+      if (!period) throw new ApiError(400, 'الشهر غير صالح.');
+      const [summary, rows] = await Promise.all([
+        http.get('/points/me/summary', period),
+        http.get('/points/me', { ...period, limit: 500 }),
+      ]);
       return {
         month: m,
-        total: sum(all),
+        total: summary.total,
         scorecard: null,
-        legacyTotal: sum(all),
-        positive: sum(all.filter((e) => e.value > 0)),
-        negative: sum(all.filter((e) => e.value < 0)),
-        rank: null,
-        entries: all,
+        legacyTotal: summary.total,
+        positive: summary.positive,
+        negative: summary.negative,
+        rank: summary.rank,
+        entries: rows.map(mapPointEntry),
       };
     },
 
@@ -306,7 +310,7 @@ export function createBackend(http, { now = () => new Date() } = {}) {
     },
 
     /**
-     * Public ranking by total points. scope 'team' needs teamId, 'campus' needs campusId;
+     * Signed-in ranking by total points. scope 'team' needs teamId, 'campus' needs campusId;
      * month is 'YYYY-MM'; archived reads the published snapshot of a closed month.
      */
     async rankings({ scope, teamId, campusId, month, archived = false }) {
@@ -316,7 +320,7 @@ export function createBackend(http, { now = () => new Date() } = {}) {
       const params = { scope, year: ym.year, month: ym.month };
       if (scope === 'team') params.teamId = userId(teamId);
       else params.campusId = userId(campusId);
-      const rows = await http.get(archived ? '/rankings/archived' : '/rankings', params, { auth: false });
+      const rows = await http.get(archived ? '/rankings/archived' : '/rankings', params);
       return mapRankingRows(rows || []);
     },
 
@@ -370,39 +374,29 @@ export function createBackend(http, { now = () => new Date() } = {}) {
     },
 
     /**
-     * Welcome page "stars" block, built from the public rankings: the leader (most points)
-     * of each team of the branch. There is no awards / news service in the backend yet, so
-     * `winner` is null and `news` is empty.
+     * Welcome page "stars" block from the public summary: the current-month leader of each team.
+     * The summary is deliberately current-month only and carries no user IDs. There is no
+     * awards / news service in the backend yet, so `winner` is null and `news` is empty.
      */
-    async hall({ campus = 'jenin', month } = {}) {
-      const cur = monthOf(now().toISOString());
-      const m = month || cur;
-      const archived = m < cur;
+    async hall({ campus = 'jenin' } = {}) {
       const opts = await self.rankingOptions();
       const camp = opts.campuses.find((c) => c.key === campus) || opts.campuses[0];
       if (!camp) throw new ApiError(400, 'الفرع غير صحيح.');
-      const teams = opts.teams.filter((t) => t.campusId === camp.id).slice(0, 4);
-      const [campusRows, ...teamRows] = await Promise.all([
-        self.rankings({ scope: 'campus', campusId: camp.id, month: m, archived }),
-        ...teams.map((t) => self.rankings({ scope: 'team', teamId: t.id, month: m, archived })),
-      ]);
+      const summary = await http.get('/rankings/public-summary', { campusId: camp.id }, { auth: false });
       return {
         campus: camp.key,
-        month: m,
-        months: [{ id: cur, status: 'open' }],
-        groups: teams.map((t, i) => {
-          const lead = teamRows[i].find((r) => r.total > 0);
-          return {
-            teamId: t.id,
-            name: teamLabel(t.name),
-            leader: lead ? { id: lead.userId, name: lead.name, photo: null, total: lead.total } : null,
-          };
-        }),
+        month: summary.month,
+        months: [{ id: summary.month, status: 'open' }],
+        groups: summary.teamLeaders.slice(0, 4).map((t) => ({
+          teamId: String(t.teamId),
+          name: teamLabel(t.teamName),
+          leader: t.leader ? { id: null, name: t.leader.name, photo: null, total: t.leader.totalPoints } : null,
+        })),
         winner: null,
         winnerActivities: [],
         stale: false,
-        ratedCount: campusRows.filter((r) => r.total > 0).length,
-        memberCount: campusRows.length,
+        ratedCount: summary.participants.rated,
+        memberCount: summary.participants.total,
         demo: false,
         news: [],
       };

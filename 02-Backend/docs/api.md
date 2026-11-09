@@ -32,6 +32,21 @@ Send `Authorization: Bearer <Clerk session token>`. Clerk verifies identity; Pos
 | DELETE | `/api/users/:id` | Organizer | `reason` |
 | GET | `/api/users/deleted` | Organizer | Deleted users |
 | POST | `/api/users/:id/restore` | Organizer | `reason`; restores inactive account |
+| GET | `/api/rankings/options` | Public | Campuses and teams for filters |
+| GET | `/api/rankings/public-summary` | Public | `campusId`; current-month Top 3 and team leaders, without user IDs |
+| GET | `/api/rankings`, `/api/rankings/archived` | Active linked user | `scope`, `teamId` or `campusId`, `year`, `month`; members only, dense rank |
+| GET | `/api/rankings/months` | Active linked user | Closed months, oldest first |
+| GET | `/api/points/me` | Active linked user | Optional `year`, `month`, `limit` (default 50, max 500) |
+| GET | `/api/points/me/summary` | Active linked user | Optional `year`, `month`; totals from SQL `SUM` |
+| GET | `/api/teams/:id/overview` | Organizer or assigned Manager | Manager dashboard |
+| GET | `/api/overview`, `/api/dashboard/ratings` | Organizer | Organizer overview |
+| GET | `/api/activities` | Organizer or Manager | Empty until the activities module exists |
+| GET | `/api/archive`, `/api/archive/:month` | Organizer | Month list; snapshot, optional `campus` or `teamId` |
+| POST | `/api/archive/close` | Organizer | Optional `{year, month}`; publishes a dense-ranked snapshot of an ended month |
+| POST | `/api/assistant` | Active linked user | `{question}`; proxied to the private chatbot service |
+| GET | `/api/assistant/data/*` | Active linked user, per-route rules | Read-only chatbot data |
+
+Month boundaries are always Asia/Hebron.
 
 Success returns `{ "data": ... }`; creation returns 201. Errors return `{ "error": { "code": "...", "message": "..." } }`. Numeric IDs must fit the positive PostgreSQL integer range.
 

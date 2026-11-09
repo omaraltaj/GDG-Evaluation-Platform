@@ -9,6 +9,19 @@ import {
   parsePointEntryId,
   validateReversePoint
 } from './validate-reversal';
+import { getMyPointsSummary } from './get-my-points-summary';
+import { queryInt } from '../shared/http';
+import { currentYearMonth, instantInPeriodSql, periodBounds } from '../shared/time';
+
+const DEFAULT_ENTRY_PAGE = 50;
+const MAX_ENTRY_PAGE = 500;
+
+function parsePointsPeriod(query: Record<string, unknown>) {
+  const year = queryInt(query.year, 2000, 9999);
+  const month = queryInt(query.month, 1, 12);
+  if (year === null || month === null || (year === undefined && month !== undefined)) return null;
+  return { year: year ?? null, month: month ?? null };
+}
 
 type ProjectRequest = Request & {
   projectUser?: {
@@ -34,23 +47,75 @@ export function createPointsRouter(pool: Pool) {
       });
     }
 
+    const period = parsePointsPeriod(req.query);
+    const limit = queryInt(req.query.limit, 1, MAX_ENTRY_PAGE);
+
+    if (period === null || limit === null) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_POINTS_QUERY',
+          message: 'Invalid year, month or limit'
+        }
+      });
+    }
+
+    const bounds = periodBounds(period.year, period.month);
+
     try {
       const result = await pool.query(
         `SELECT
            entry_id::text AS id,
            points,
            activity_name AS "activityName",
+           activity_description AS "activityDescription",
            reason,
+           reverses_entry_id::text AS "reversesEntryId",
            effective_at AS "effectiveAt"
          FROM point_entries
          WHERE user_id = $1
+           AND ${instantInPeriodSql('effective_at', 2, 3)}
          ORDER BY effective_at DESC, entry_id DESC
-         LIMIT 50`,
-        [user.id]
+         LIMIT $4`,
+        [user.id, bounds.start, bounds.end, limit ?? DEFAULT_ENTRY_PAGE]
       );
 
       return res.status(200).json({
         data: result.rows
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  // GET /api/points/me/summary: totals come from SQL SUM over the whole ledger, never a page of rows.
+  router.get('/me/summary', async (req, res, next) => {
+    const user = (req as ProjectRequest).projectUser;
+
+    if (!user) {
+      return res.status(401).json({
+        error: {
+          code: 'UNAUTHENTICATED',
+          message: 'Authentication is required'
+        }
+      });
+    }
+
+    const period = parsePointsPeriod(req.query);
+
+    if (period === null || (period.year === null && period.month !== null)) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_POINTS_QUERY',
+          message: 'Invalid year or month'
+        }
+      });
+    }
+
+    try {
+      const selected = period.year === null ? currentYearMonth() : period;
+
+      return res.status(200).json({
+        data: await getMyPointsSummary(pool, user, selected.year as number, selected.month)
       });
     } catch (error) {
       return next(error);

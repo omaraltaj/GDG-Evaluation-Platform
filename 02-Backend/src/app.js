@@ -23,17 +23,38 @@ const { createAuditRouter } =
   require('../dist/phase2/audit/audit.routes.js')
 
 const { createManagerEvaluationsRouter } = require('../dist/phase2/evaluations/manager-evaluations.routes.js')
+const { createPublicRankingsRouter } = require('../dist/phase2/rankings/public-rankings.routes.js')
+const { createArchiveRouter } = require('../dist/phase2/archive/archive.routes.js')
+const { createDashboardHandlers } = require('../dist/phase2/dashboards/dashboards.handlers.js')
+const { createAssistantDataRouter } = require('../dist/phase2/assistant/assistant-data.routes.js')
+const { createAssistantRouter } = require('../dist/phase2/assistant/assistant.routes.js')
+const requireTeamAccess = require('./middleware/require-team-access')
 
 const app = express()
 
 app.use(cors())
 app.use(express.json())
 
-// Phase 2: Public rankings are accessible without login.
-app.use('/api/rankings', createRankingsRouter(pool))
+// Only filter options and the current-month summary are public.
+app.use('/api/rankings', createPublicRankingsRouter(pool))
 
 // Verifies Clerk session tokens for subsequent routes.
 app.use(clerkMiddleware())
+
+// Full, team and historical rankings require a signed-in project account.
+app.use('/api/rankings', loadProjectUser, createRankingsRouter(pool))
+
+const dashboards = createDashboardHandlers(pool)
+app.get('/api/overview', loadProjectUser, requireRole('organizer'), dashboards.organizerOverview)
+app.get('/api/dashboard/ratings', loadProjectUser, requireRole('organizer'), dashboards.organizerDashboard)
+app.get('/api/activities', loadProjectUser, requireRole('organizer', 'manager'), dashboards.activities)
+app.get('/api/teams/:id/overview', loadProjectUser, requireTeamAccess, dashboards.teamOverview)
+
+app.use('/api/archive', loadProjectUser, requireRole('organizer'), createArchiveRouter(pool))
+
+// The data router is mounted first so POST /api/assistant stays the only other route under this path.
+app.use('/api/assistant/data', loadProjectUser, createAssistantDataRouter(pool))
+app.use('/api/assistant', loadProjectUser, createAssistantRouter())
 
 app.use(
   '/api/audit',

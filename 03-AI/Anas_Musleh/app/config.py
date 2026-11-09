@@ -1,9 +1,13 @@
 import os
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+APP_TZ = ZoneInfo("Asia/Hebron")
+CHATBOT_INTERNAL_KEY = os.getenv("CHATBOT_INTERNAL_KEY", "")
 
 BACKEND_MODE = os.getenv("BACKEND_MODE", "mock").lower()   # "mock" | "real"
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3001")
@@ -19,4 +23,4 @@ def today() -> date:
         return date.fromisoformat(pinned)
     if BACKEND_MODE == "mock":
         return date(2026, 10, 23)      
-    return date.today()
+    return datetime.now(APP_TZ).date()
