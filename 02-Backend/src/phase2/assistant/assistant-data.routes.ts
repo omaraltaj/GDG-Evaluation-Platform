@@ -129,9 +129,12 @@ export function createAssistantDataRouter(pool: Pool) {
       ? rows.map((r) => ({ rank: r.rank, name: r.fullName, totalPoints: r.totalPoints }))
       : [];
 
+    // The board's month total answers "how many points does my team have this month?" in one call.
+    const totalPoints = rows.reduce((sum, r) => sum + r.totalPoints, 0);
     return res.status(200).json({
       data: {
         scope, campusId: campusId ?? null, teamId: teamId ?? null, ...period, hasData,
+        totalPoints, participants: rows.length,
         entries: limit ? entries.slice(0, limit) : entries
       }
     });
@@ -142,12 +145,8 @@ export function createAssistantDataRouter(pool: Pool) {
     const period = readRequiredMonth(req.query);
     const scope = req.query.scope ?? 'team';
     if (!period || (scope !== 'team' && scope !== 'campus')) return badQuery(res);
+    // Members and Managers are both ranked; an Organizer has no team and so no personal rank.
     if (!actor.teamId) return sendError(res, 400, 'NO_TEAM', 'This account has no team, so it has no personal ranking');
-    if (actor.role !== 'member') {
-      return res.status(200).json({
-        data: { scope, ...period, hasData: false, note: 'Rankings include members only.' }
-      });
-    }
 
     let rows;
     if (scope === 'team') {

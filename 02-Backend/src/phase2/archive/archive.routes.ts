@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Pool } from 'pg';
 
 import { publishMonthlySnapshot } from '../rankings/publish-monthly-snapshot';
+import { applyClosedMonthCorrection, validateCorrection } from './closed-month-correction';
 import { type ProjectRequest, sendError } from '../shared/http';
 import {
   campusKey,
@@ -17,6 +18,13 @@ const PUBLISH_FAILURES: Record<string, [number, string, string]> = {
   MONTH_ALREADY_PUBLISHED: [409, 'MONTH_ALREADY_PUBLISHED', 'This month has already been closed'],
   EXISTING_SNAPSHOT_ROWS: [409, 'EXISTING_SNAPSHOT_ROWS', 'Snapshot rows already exist for this month'],
   SNAPSHOT_CONFLICTS: [409, 'SNAPSHOT_CONFLICTS', 'The snapshot contains duplicate rows for one team or campus']
+};
+
+const CORRECTION_FAILURES: Record<string, [number, string, string]> = {
+  forbidden: [403, 'FORBIDDEN', 'Managers can correct only people of the team they manage, never themselves'],
+  recipient_not_found: [404, 'RECIPIENT_NOT_FOUND', 'Person not found'],
+  recipient_ineligible: [409, 'CORRECTION_RECIPIENT_INELIGIBLE', 'Only a non-deleted Member or Manager can be corrected'],
+  no_assignment: [409, 'NO_TEAM_IN_MONTH', 'This person did not belong to a team in that month']
 };
 
 async function closedMonths(pool: Pool) {
@@ -48,17 +56,39 @@ function parseCloseTarget(body: unknown): YearMonth | null | undefined {
 export function createArchiveRouter(pool: Pool) {
   const router = Router();
 
-  router.get('/', async (_req, res) => {
+  // Organizer: every month, all correctable people. Manager: the people of the team they manage.
+  router.get('/', async (req, res) => {
+    const actor = (req as ProjectRequest).projectUser;
+    const managedOnly = actor.role === 'manager';
     const closed = await closedMonths(pool);
     const open = monthId(closableMonth(closed));
-    const members = await pool.query(
-      `SELECT u.user_id::text AS id, u.full_name AS name, c.campus_name AS "campusName"
-       FROM users u
-       JOIN teams t ON t.team_id = u.team_id
-       JOIN campuses c ON c.campus_id = t.campus_id
-       WHERE u.role = 'Member' AND u.deleted_at IS NULL
-       ORDER BY u.full_name, u.user_id`
-    );
+    const [people, corrections] = await Promise.all([
+      pool.query(
+        `SELECT u.user_id::text AS id, u.full_name AS name, c.campus_name AS "campusName", LOWER(u.role) AS role
+         FROM users u
+         JOIN teams t ON t.team_id = u.team_id
+         JOIN campuses c ON c.campus_id = t.campus_id
+         WHERE u.role IN ('Member', 'Manager') AND u.deleted_at IS NULL AND u.user_id <> $1
+           AND ($2::boolean = FALSE OR t.manager_user_id = $1)
+         ORDER BY u.full_name, u.user_id`,
+        [actor.id, managedOnly]
+      ),
+      pool.query(
+        `SELECT p.entry_id::text AS id, p.points AS value, p.reason, p.user_id::text AS "userId",
+                u.full_name AS "userName", a.full_name AS "actorName", l.created_at AS ts,
+                l.new_values->>'month' AS month
+         FROM audit_logs l
+         JOIN point_entries p ON p.entry_id::text = l.entity_id
+         JOIN users u ON u.user_id = p.user_id
+         JOIN users a ON a.user_id = p.performed_by_user_id
+         WHERE l.action = 'CLOSED_MONTH_CORRECTION' AND l.entity_name = 'point_entries'
+           AND ($2::boolean = FALSE OR p.performed_by_user_id = $1 OR (l.new_values->>'teamId')::int IN
+                (SELECT team_id FROM teams WHERE manager_user_id = $1))
+         ORDER BY l.created_at DESC
+         LIMIT 200`,
+        [actor.id, managedOnly]
+      )
+    ]);
 
     return res.status(200).json({
       data: {
@@ -67,10 +97,11 @@ export function createArchiveRouter(pool: Pool) {
           { id: open, status: 'open' },
           ...closed.map((m) => ({ id: m.id, status: 'archived' }))
         ],
-        corrections: [],
-        members: members.rows.map((m) => ({
+        corrections: corrections.rows.map((c) => ({ ...c, ts: new Date(c.ts).getTime() })),
+        members: people.rows.map((m) => ({
           id: m.id,
           name: m.name,
+          role: m.role,
           campus: campusKey(m.campusName)
         }))
       }
@@ -80,6 +111,7 @@ export function createArchiveRouter(pool: Pool) {
   // POST /api/archive/close: optional { year, month }; defaults to the month shown as open.
   router.post('/close', async (req, res) => {
     const actor = (req as ProjectRequest).projectUser;
+    if (actor.role !== 'organizer') return sendError(res, 403, 'FORBIDDEN', 'Organizer access is required');
     const requested = parseCloseTarget(req.body);
     if (requested === null) {
       return sendError(res, 400, 'INVALID_ARCHIVE_MONTH', 'Provide a valid year and month, or no body');
@@ -107,10 +139,25 @@ export function createArchiveRouter(pool: Pool) {
     }
   });
 
-  // Late corrections need a separate approved design; refuse honestly instead of faking success.
-  router.post('/corrections', (_req, res) =>
-    sendError(res, 501, 'NOT_SUPPORTED_BY_BACKEND', 'Late corrections are not available yet')
-  );
+  // POST /api/archive/corrections { month: 'YYYY-MM', userId, value, reason }: a compensating point
+  // entry inside a prior month; a closed month's Team and Campus rankings are recomputed atomically.
+  router.post('/corrections', async (req, res) => {
+    const actor = (req as ProjectRequest).projectUser;
+    const validation = validateCorrection(req.body, currentYearMonth());
+    if ('error' in validation) return sendError(res, 400, validation.code, validation.error);
+    try {
+      const result = await applyClosedMonthCorrection(pool, actor, validation.value);
+      const failure = CORRECTION_FAILURES[result.outcome];
+      if (failure) return sendError(res, failure[0], failure[1], failure[2]);
+      if (result.outcome !== 'corrected') throw new Error('Unexpected correction outcome');
+      return res.status(201).json({ data: result.data });
+    } catch (error) {
+      if ((error as { code?: string }).code === '23505') {
+        return sendError(res, 409, 'SNAPSHOT_CONFLICTS', 'The recomputed snapshot would duplicate a ranking row');
+      }
+      throw error;
+    }
+  });
 
   router.get('/:month', async (req, res) => {
     const actor = (req as unknown as ProjectRequest).projectUser;
@@ -138,7 +185,7 @@ export function createArchiveRouter(pool: Pool) {
        LEFT JOIN teams t ON t.team_id = r.team_id
        WHERE r.year = $1 AND r.month = $2
          AND r.archived_at IS NOT NULL
-         AND u.role = 'Member' AND u.deleted_at IS NULL
+         AND u.role IN ('Member', 'Manager') AND u.deleted_at IS NULL
          AND r.ranking_scope = $3
          AND ($4::int IS NULL OR r.team_id = $4)
        ORDER BY r.campus_id, r.rank_position, u.full_name, u.user_id`,

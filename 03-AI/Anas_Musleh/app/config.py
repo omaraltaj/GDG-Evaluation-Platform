@@ -32,6 +32,9 @@ GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "1024"))
 GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0.2"))
 MAX_TOOL_ROUNDS = int(os.getenv("MAX_TOOL_ROUNDS", "6"))
 LLM_RETRIES = int(os.getenv("LLM_RETRIES", "1"))   # full passes over the model list (the fallbacks already retry)
+# Whole-question budget: no new Gemini call starts after this, so the Node proxy (30 s) always gets
+# a clear answer or a clear error instead of hanging.
+CHAT_DEADLINE_S = float(os.getenv("CHAT_DEADLINE_S", "25"))
 
 
 def today() -> date:

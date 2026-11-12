@@ -46,8 +46,10 @@ const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http:
 app.use(cors({
   origin: allowedOrigins,
   credentials: true,
-  allowedHeaders: ['Authorization', 'Content-Type', 'Accept'],
-  exposedHeaders: ['Authorization', 'Retry-After'],
+  // Idempotency-Key: sent by the frontend on POST /api/points (duplicate-submission protection).
+  // Without it here the browser's preflight fails and the request never reaches the API.
+  allowedHeaders: ['Authorization', 'Content-Type', 'Accept', 'Idempotency-Key'],
+  exposedHeaders: ['Authorization', 'Retry-After', 'Idempotent-Replayed'],
 }))
 app.use(express.json())
 
@@ -74,7 +76,7 @@ app.use('/api/policies', loadProjectUser, createPoliciesRouter(pool))
 app.use('/api/syslog', loadProjectUser, requireRole('organizer'), createSyslogRouter(pool))
 app.get('/api/teams/:id/overview', loadProjectUser, requireTeamAccess, dashboards.teamOverview)
 
-app.use('/api/archive', loadProjectUser, requireRole('organizer'), createArchiveRouter(pool))
+app.use('/api/archive', loadProjectUser, requireRole('organizer', 'manager'), createArchiveRouter(pool))
 
 // The data router is mounted first so POST /api/assistant stays the only other route under this path.
 app.use('/api/assistant/data', loadProjectUser, createAssistantDataRouter(pool))

@@ -585,7 +585,7 @@ test('PostgreSQL account, invitation and registration workflows', {
       assert.equal((await deleteOrRestore('DELETE', `/api/users/${userId}`, null)).status, 401)
       assert.equal((await deleteOrRestore('DELETE', `/api/users/${userId}`, 'clerk_invited')).status, 403)
       assert.equal((await deleteOrRestore('DELETE', `/api/users/${userId}`, 'clerk_org', { reason: 'Test', isActive: true })).status, 400)
-      assert.equal((await deleteOrRestore('DELETE', `/api/users/${actorId}`, 'clerk_org')).body.error.code, 'LAST_ACTIVE_ORGANIZER')
+      assert.equal((await deleteOrRestore('DELETE', `/api/users/${actorId}`, 'clerk_org')).body.error.code, 'SELF_LOCKOUT') // own account: refused before the last-organizer rule
       assert.equal((await deleteOrRestore('DELETE', `/api/users/${managerId}`, 'clerk_org')).body.error.code, 'MANAGER_REPLACEMENT_REQUIRED')
       assert.equal((await deleteOrRestore('DELETE', `/api/users/${userId}`, 'clerk_org')).status, 200)
       const deletedList = await deleteOrRestore('GET', '/api/users/deleted', 'clerk_org')

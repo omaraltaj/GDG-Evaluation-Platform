@@ -211,10 +211,12 @@ class MockBackend(BackendClient):
         if scope == "team" and not team_id:
             raise BackendError("INVALID_REQUEST", "team_id is required for scope=team", 400)
         rows, has_data = self._board(scope, campus_id, team_id, month, year)
+        total, participants = sum(r["totalPoints"] for r in rows), len(rows)   # like the real endpoint
         if limit:
             rows = rows[:limit]
         return {"scope": scope, "campusId": campus_id, "teamId": team_id, "month": month, "year": year,
-                "hasData": has_data, "entries": rows if has_data else []}
+                "hasData": has_data, "totalPoints": total, "participants": participants,
+                "entries": rows if has_data else []}
 
     def my_ranking(self, token, scope, month, year):
         a = self._actor(token)

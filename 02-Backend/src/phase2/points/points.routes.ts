@@ -10,6 +10,7 @@ import {
   validateReversePoint
 } from './validate-reversal';
 import { getMyPointsSummary } from './get-my-points-summary';
+import { getTeamPointsHistory } from './get-team-points-history';
 import { queryInt } from '../shared/http';
 import { currentYearMonth, instantInPeriodSql, periodBounds } from '../shared/time';
 
@@ -33,6 +34,32 @@ type ProjectRequest = Request & {
 
 export function createPointsRouter(pool: Pool) {
   const router = Router();
+
+  // GET /api/points/team-history?year&month&limit: Give Points log (Manager: own team; Organizer: own entries).
+  router.get('/team-history', async (req, res, next) => {
+    const user = (req as ProjectRequest).projectUser;
+    if (!user) {
+      return res.status(401).json({ error: { code: 'UNAUTHENTICATED', message: 'Authentication is required' } });
+    }
+    if (user.role !== 'manager' && user.role !== 'organizer') {
+      return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only managers and organizers award points' } });
+    }
+    const period = parsePointsPeriod(req.query);
+    const limit = queryInt(req.query.limit, 1, MAX_ENTRY_PAGE);
+    if (period === null || limit === null || (period.year === null) !== (period.month === null)) {
+      return res.status(400).json({ error: { code: 'INVALID_POINTS_QUERY', message: 'Provide both year and month, or neither' } });
+    }
+    const selected = period.year === null ? currentYearMonth() : { year: period.year, month: period.month as number };
+    try {
+      const result = await getTeamPointsHistory(pool, user, selected.year, selected.month, limit ?? 200);
+      if (result.outcome === 'no_team') {
+        return res.status(409).json({ error: { code: 'NO_MANAGED_TEAM', message: 'This manager does not manage a team' } });
+      }
+      return res.status(200).json({ data: result.data });
+    } catch (error) {
+      return next(error);
+    }
+  });
 
   // GET /api/points/me
   router.get('/me', async (req, res, next) => {
@@ -155,6 +182,14 @@ export function createPointsRouter(pool: Pool) {
       });
     }
 
+    // Optional Idempotency-Key: a retried request with the same key returns the first entry.
+    const rawKey = req.get('Idempotency-Key');
+    if (rawKey !== undefined && !/^[A-Za-z0-9._:-]{1,100}$/.test(rawKey)) {
+      return res.status(400).json({
+        error: { code: 'INVALID_IDEMPOTENCY_KEY', message: 'Idempotency-Key must be 1-100 letters, digits or . _ : -' }
+      });
+    }
+
     try {
       const result = await createPoint(
         pool,
@@ -163,12 +198,30 @@ export function createPointsRouter(pool: Pool) {
           role: actor.role,
           teamId: actor.teamId
         },
-        validation.value
+        validation.value,
+        rawKey ?? null
       );
 
       if (result.outcome === 'created') {
         return res.status(201).json({
           data: result.entry
+        });
+      }
+
+      if (result.outcome === 'replayed') {
+        res.set('Idempotent-Replayed', 'true');
+        return res.status(200).json({ data: result.entry });
+      }
+
+      if (result.outcome === 'idempotency_key_reused') {
+        return res.status(409).json({
+          error: { code: 'IDEMPOTENCY_KEY_REUSED', message: 'This Idempotency-Key was already used for a different request' }
+        });
+      }
+
+      if (result.outcome === 'duplicate') {
+        return res.status(409).json({
+          error: { code: 'DUPLICATE_POINT_SUBMISSION', message: 'An identical point entry was just recorded', entryId: result.entryId }
         });
       }
 
@@ -260,7 +313,8 @@ export function createPointsRouter(pool: Pool) {
       // Successful reversal
       if (result.outcome === 'reversed') {
         return res.status(201).json({
-          data: result.entry
+          data: result.entry,
+          rankingRevisions: result.rankingRevisions
         });
       }
 
@@ -280,16 +334,6 @@ export function createPointsRouter(pool: Pool) {
           error: {
             code: 'ENTRY_NOT_FOUND',
             message: 'Point entry does not exist'
-          }
-        });
-      }
-
-      // Recipient doesn't exist
-      if (result.outcome === 'recipient_not_found') {
-        return res.status(404).json({
-          error: {
-            code: 'RECIPIENT_NOT_FOUND',
-            message: 'Point recipient does not exist'
           }
         });
       }

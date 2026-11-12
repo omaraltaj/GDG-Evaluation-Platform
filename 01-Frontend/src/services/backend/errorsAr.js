@@ -46,11 +46,14 @@ const BY_CODE = {
   USER_NOT_DELETED: 'هذا الحساب غير محذوف.',
   EMAIL_ALREADY_EXISTS: 'يوجد حساب بنفس البريد الإلكتروني.',
   TEAM_ALREADY_EXISTS: 'يوجد فريق بهذا الاسم في هذا الحرم.',
-  TEAM_MANAGER_EXISTS: 'لهذا الفريق مدير بالفعل. استخدم استبدال المدير.',
+  TEAM_MANAGER_EXISTS: 'لهذا الفريق مدير حالي بالفعل، ولكل فريق مدير واحد فقط. أزل المدير الحالي أولًا.',
+  INVALID_TEAM_MANAGER: 'اختر حساب مدير فعّالًا وغير محذوف.',
+  OPERATIONAL_TEAM_NEEDS_MANAGER: 'لا يمكن إزالة مدير فريق فعّال. عطّل الفريق أولًا.',
   TEAM_REQUIRED: 'الأعضاء والمدراء يجب أن ينتموا إلى فريق.',
   INVALID_ASSIGNMENT: 'المنظّم لا ينتمي إلى فريق.',
   LAST_ACTIVE_ORGANIZER: 'لا يمكن تعطيل أو حذف أو تخفيض آخر منظّم فعّال.',
-  MANAGER_REPLACEMENT_REQUIRED: 'عيّن بديلًا لمدير الفريق قبل هذه العملية.',
+  SELF_LOCKOUT: 'لا يمكنك تخفيض دورك أو تعطيل حسابك أو حذفه بنفسك؛ يقوم بذلك منظّم آخر.',
+  MANAGER_REPLACEMENT_REQUIRED: 'هذا المدير يدير فريقًا فعّالًا لا يبقى بلا مدير: عطّل ذلك الفريق أو عيّن له مديرًا آخر أولًا.',
   ACTIVE_TEAM_MANAGER_REQUIRED: 'تفعيل الفريق يتطلب مديرًا فعّالًا من نفس الفريق.',
   INVALID_MANAGER: 'الفريق الفعّال يتطلب مديرًا فعّالًا ومرتبطًا بحسابه.',
   MANAGER_CHANGED: 'تغيّر مدير الفريق. أعد تحميل الصفحة وحاول مرة أخرى.',
@@ -69,6 +72,14 @@ const BY_CODE = {
   IDENTITY_PROVIDER_UNAVAILABLE: 'خدمة التحقق من الهوية غير متاحة مؤقتًا. أعد المحاولة لاحقًا.',
   CANNOT_REVERSE_REVERSAL: 'لا يمكن عكس عملية عكسية.',
   ALREADY_REVERSED: 'هذه العملية معكوسة مسبقًا.',
+  DUPLICATE_POINT_SUBMISSION: 'سُجّلت عملية نقاط مطابقة قبل لحظات؛ لم تُكرَّر.',
+  IDEMPOTENCY_KEY_REUSED: 'استُخدم مفتاح الإرسال لعملية مختلفة. أعد المحاولة.',
+  INVALID_IDEMPOTENCY_KEY: 'مفتاح الإرسال غير صالح.',
+  INVALID_CORRECTION: 'بيانات التصحيح غير صالحة.',
+  CORRECTION_REASON_REQUIRED: 'سبب التصحيح إلزامي.',
+  MONTH_NOT_CLOSED: 'التصحيح للأشهر السابقة فقط؛ استخدم إضافة النقاط للشهر الحالي.',
+  CORRECTION_RECIPIENT_INELIGIBLE: 'يمكن تصحيح نقاط عضو أو مدير غير محذوف فقط.',
+  NO_TEAM_IN_MONTH: 'لم يكن هذا الشخص ضمن أي فريق في ذلك الشهر.',
   MONTH_LOCKED: 'هذا الشهر مقفل.',
   INVALID_MONTH: 'الشهر غير صالح.',
   INVALID_CAMPUS: 'الفرع غير صحيح.',
@@ -95,6 +106,7 @@ const BY_CODE = {
   ASSISTANT_RATE_LIMITED: 'أسئلة كثيرة خلال وقت قصير. انتظر دقيقة ثم أعد المحاولة.',
   ASSISTANT_UNAVAILABLE: 'المساعد غير متاح مؤقتًا. أعد المحاولة لاحقًا.',
   ASSISTANT_TIMEOUT: 'استغرق المساعد وقتًا طويلًا. أعد المحاولة.',
+  NO_MANAGED_TEAM: 'لا تدير فريقًا حاليًا، لذلك لا يوجد سجل نقاط لفريق.',
   DATABASE_UNAVAILABLE: 'قاعدة البيانات غير متاحة حاليًا.',
   INTERNAL_SERVER_ERROR: 'حدث خطأ غير متوقع في الخادم.',
 };
@@ -116,13 +128,26 @@ const GENERIC = 'حدث خطأ غير متوقع. حاول مرة أخرى.';
  * Supports the backend shape { error: { code, message } } and the older
  * contract shape { message, details }.
  */
+// Why the assistant is unavailable (POST /api/assistant passes a known `reason` with ASSISTANT_UNAVAILABLE).
+export const ASSISTANT_REASON_AR = {
+  AI_QUOTA_EXCEEDED: 'وصل المساعد إلى حد الاستخدام اليومي لخدمة الذكاء الاصطناعي. ما زال يجيب فورًا عن طريقة استخدام المنصة وعن نقاطك ونقاط فريقك هذا الشهر؛ أعد الأسئلة الأخرى لاحقًا.',
+  AI_UNAVAILABLE: 'خدمة الذكاء الاصطناعي مشغولة حاليًا. أعد المحاولة بعد قليل.',
+  AI_MODEL_UNAVAILABLE: 'نموذج الذكاء الاصطناعي غير متاح حاليًا. أبلغ المنظّم.',
+  AI_KEY_INVALID: 'إعداد خدمة الذكاء الاصطناعي غير صحيح. أبلغ المنظّم.',
+  AI_KEY_MISSING: 'خدمة الذكاء الاصطناعي غير مُعدّة بعد. أبلغ المنظّم.',
+  CHATBOT_NOT_CONFIGURED: 'المساعد غير مُعدّ بعد. أبلغ المنظّم.',
+  BACKEND_UNAVAILABLE: 'تعذّر الوصول إلى بيانات المنصة مؤقتًا. أعد المحاولة بعد قليل.',
+};
+
 export function translateServerError(status, body) {
   const err = body && typeof body === 'object' ? body.error : null;
   if (err && typeof err === 'object') {
     const code = typeof err.code === 'string' ? err.code : undefined;
+    const reason = typeof err.reason === 'string' ? err.reason : undefined;
+    const byReason = code === 'ASSISTANT_UNAVAILABLE' && reason ? ASSISTANT_REASON_AR[reason] : undefined;
     return {
-      message: (code && BY_CODE[code]) || BY_STATUS[status] || GENERIC,
-      details: { code, serverMessage: err.message },
+      message: byReason || (code && BY_CODE[code]) || BY_STATUS[status] || GENERIC,
+      details: { code, reason, serverMessage: err.message },
     };
   }
   if (body && typeof body === 'object' && typeof body.message === 'string') {

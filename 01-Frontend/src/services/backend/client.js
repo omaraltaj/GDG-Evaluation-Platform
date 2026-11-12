@@ -12,18 +12,17 @@ import {
   mapRankingRows, mapTeam, mapUser, monthOf, splitMonth,
 } from './adapters.js';
 
-const notSupported = (what) => new ApiError(
-  501,
-  `${what} غير متاح بعد في الباك.`,
-  { code: 'NOT_SUPPORTED_BY_BACKEND' },
-);
-
 // Reasons the UI does not collect today but the backend requires (audit log).
 export const DEFAULT_REASONS = {
   update: 'تعديل بيانات من لوحة المنظّم',
   restore: 'استرجاع حساب من لوحة المنظّم',
   delete: 'حذف حساب من لوحة المنظّم',
+  team: 'تعديل فريق من لوحة المنظّم',
 };
+
+const newIdempotencyKey = () => (globalThis.crypto && globalThis.crypto.randomUUID
+  ? globalThis.crypto.randomUUID()
+  : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
 
 export function createBackend(http, { now = () => new Date() } = {}) {
   const userId = (id) => {
@@ -180,7 +179,7 @@ export function createBackend(http, { now = () => new Date() } = {}) {
       return dir.teams.map((t) => ({
         ...t,
         managers: users
-          .filter((u) => u.role === 'manager' && String(u.teamId) === t.id)
+          .filter((u) => u.role === 'manager' && String(u.id) === t.managerId)
           .map((m) => ({ id: String(m.id), name: m.name })),
         activeMembers: users.filter((u) => u.role === 'member' && u.isActive && String(u.teamId) === t.id).length,
       }));
@@ -194,14 +193,25 @@ export function createBackend(http, { now = () => new Date() } = {}) {
     },
 
     /**
-     * Create only. A new team starts non-operational and has no manager: add a manager by
-     * creating a Manager user in it, then activate the team. Editing a team (rename /
-     * managers) has no backend endpoint yet.
+     * Create (new teams start non-operational, without a manager) or edit: rename and/or set the
+     * single manager (PATCH /teams/:id). Only the changed fields are sent; managerId null removes it.
      */
     async saveTeam(b) {
-      if (b.id) throw notSupported('تعديل اسم الفريق أو مديريه');
       const name = trimmed(b.name);
       if (name.length < 2) throw new ApiError(400, 'أدخل اسم الفريق.');
+      if (b.id) {
+        const ids = Array.isArray(b.managerIds) ? b.managerIds : [];
+        if (ids.length > 1) throw new ApiError(400, 'يسمح بمدير واحد فقط لكل فريق.');
+        const [cur, dir] = await Promise.all([http.get(`/teams/${userId(b.id)}`), directory()]);
+        const body = {};
+        if (name !== cur.name) body.name = name;
+        const want = ids.length ? userId(ids[0]) : null;
+        if (want !== (cur.managerId ?? null)) body.managerId = want;
+        if (!Object.keys(body).length) return mapTeam(cur, dir.campusName);
+        body.reason = DEFAULT_REASONS.team;
+        const res = await http.patch(`/teams/${userId(b.id)}`, body);
+        return mapTeam(res, dir.campusName);
+      }
       const dir = await directory();
       const campus = dir.campuses.find((c) => campusKey(c.name) === b.campus);
       if (!campus) throw new ApiError(400, 'اختر الحرم.');
@@ -222,20 +232,61 @@ export function createBackend(http, { now = () => new Date() } = {}) {
      * UI "reason" doubles as the backend's required `activityName` (trimmed to 100).
      * The backend range is -100..100 (the UI policy limit is applied before this call).
      */
-    async addPoints({ userId: uid, value, reason, activity }) {
+    async addPoints({ userId: uid, value, reason, activity, idempotencyKey }) {
       const text = trimmed(reason);
+      // One key per submission: a retried request returns the first entry instead of a second one.
+      const key = idempotencyKey || newIdempotencyKey();
       const entry = await http.post('/points', {
         userId: userId(uid),
         points: Number(value),
         activityName: (trimmed(activity) || text).slice(0, 100),
         reason: text,
-      });
+      }, { headers: { 'Idempotency-Key': key } });
       return { total: null, entry: mapPointEntry(entry) };
     },
 
+    /**
+     * POST /api/points/:id/reverse { reason }. Returns the new reversal entry (-points, dated at the
+     * original's instant). The server refuses a second reversal (ALREADY_REVERSED), a reversal of a
+     * reversal (CANNOT_REVERSE_REVERSAL) and entries outside the actor's scope (FORBIDDEN).
+     */
+    async reversePoint(id, reason) {
+      const text = trimmed(reason);
+      if (!text) throw new ApiError(400, 'سبب العكس إلزامي.');
+      if (text.length > 500) throw new ApiError(400, 'سبب العكس طويل جدًا (الحد 500 حرف).');
+      const entry = await http.post(`/points/${entryId(id)}/reverse`, { reason: text });
+      return { ok: true, entry: mapPointEntry(entry) };
+    },
+
+    /** Older name kept for existing callers. */
     async reversePoints(id, reason) {
-      await http.post(`/points/${entryId(id)}/reverse`, { reason: trimmed(reason) });
+      const text = trimmed(reason);
+      if (!text) throw new ApiError(400, 'سبب العكس إلزامي.');
+      await http.post(`/points/${entryId(id)}/reverse`, { reason: text });
       return { ok: true };
+    },
+
+    /**
+     * Give Points log for a month (default: current). Manager: entries of the team they manage;
+     * organizer: entries they recorded. Totals per person and for the team come from SQL.
+     */
+    async teamPointsHistory(month) {
+      const period = month ? splitMonth(month) : null;
+      if (month && !period) throw new ApiError(400, 'الشهر غير صالح.');
+      const d = await http.get('/points/team-history', period ? { ...period, limit: 200 } : { limit: 200 });
+      return {
+        scope: d.scope,
+        team: d.team ? { id: String(d.team.id), name: d.team.name } : null,
+        month: `${d.year}-${String(d.month).padStart(2, '0')}`,
+        totals: d.totals,
+        members: d.members.map((m) => ({ userId: String(m.userId), name: m.name, total: m.total, entries: m.entries })),
+        entries: d.entries.map((e) => ({
+          id: String(e.id), userId: String(e.userId), userName: e.userName, value: e.points,
+          activity: e.activityName, reason: e.reason, ts: Date.parse(e.effectiveAt) || 0,
+          actorName: e.actorName, awardedByMe: !!e.awardedByMe, isReversal: e.reversesEntryId != null, reversed: !!e.reversed,
+        })),
+        truncated: !!d.truncated,
+      };
     },
 
     /** Members the actor may give points to: organizer -> all active members, manager -> own team. */
@@ -244,7 +295,8 @@ export function createBackend(http, { now = () => new Date() } = {}) {
       const dir = await directory();
       let rows;
       if (me.role === 'organizer') {
-        rows = (await activeUsersList()).filter((u) => u.role === 'member' && u.isActive);
+        // Members and Managers both receive points (they share the monthly rankings).
+        rows = (await activeUsersList()).filter((u) => (u.role === 'member' || u.role === 'manager') && u.isActive);
       } else if (me.role === 'manager' && me.teamId != null) {
         rows = await http.get(`/teams/${me.teamId}/members`);
       } else {
@@ -334,40 +386,29 @@ export function createBackend(http, { now = () => new Date() } = {}) {
     },
 
     /**
-     * Leaderboard page (public rankings, by total points). Same shape as the mock leaderboard.
-     * The backend ranks one team or one campus at a time: `global` merges the campuses and
-     * re-ranks (equal points share a rank). Months before the current one are read from the
-     * published (archived) snapshot. Team / photo details are not in the ranking payload.
+     * Leaderboard page: ONE monthly board, a team or a campus (Jenin and Ramallah are never
+     * combined). Ranks are the backend's DENSE_RANK (1, 1, 2). Months before the current one are
+     * read from the published (archived) snapshot. Team / photo details are not in the payload.
      */
-    async leaderboard({ month, campus, teamId, global } = {}) {
+    async leaderboard({ month, campus, teamId } = {}) {
       const cur = monthOf(now().toISOString());
       const m = month || cur;
       const archived = m < cur;
-      if (global && !(await self.policies()).globalLeaderboardEnabled) {
-        throw new ApiError(403, 'الترتيب العام غير مفعّل حاليًا.');
-      }
       const [opts, me] = await Promise.all([self.rankingOptions(), http.get('/auth/me').catch(() => null)]);
 
-      let queries;
-      if (teamId && !global) {
+      let q;
+      if (teamId) {
         const team = opts.teams.find((t) => t.id === String(teamId));
         const camp = team && opts.campuses.find((c) => c.id === team.campusId);
-        queries = [{ scope: 'team', teamId, campus: camp ? camp.key : '', teamName: team ? team.name : '' }];
+        q = { scope: 'team', teamId, campus: camp ? camp.key : '', teamName: team ? team.name : '' };
       } else {
-        const list = campus && !global ? opts.campuses.filter((c) => c.key === campus) : opts.campuses;
-        queries = list.map((c) => ({ scope: 'campus', campusId: c.id, campus: c.key }));
+        // A requested campus is never swapped for another one; no campus means the first.
+        const c = campus ? opts.campuses.find((x) => x.key === campus) : opts.campuses[0];
+        if (!c) return { month: m, archived, rows: [] };
+        q = { scope: 'campus', campusId: c.id, campus: c.key, teamName: '' };
       }
-      const lists = await Promise.all(queries.map(async (q) => {
-        const rows = await self.rankings({ scope: q.scope, teamId: q.teamId, campusId: q.campusId, month: m, archived });
-        return rows.map((r) => ({ ...r, campus: q.campus, teamName: q.teamName || '' }));
-      }));
-
-      let rows = lists.flat();
-      if (lists.length > 1) {
-        rows.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, 'ar') || a.userId.localeCompare(b.userId));
-        rows.forEach((r, i) => { r.rank = i > 0 && rows[i - 1].total === r.total ? rows[i - 1].rank : i + 1; });
-        rows.forEach((r) => { r.tie = rows.some((o) => o !== r && o.total === r.total); });
-      }
+      const ranked = await self.rankings({ scope: q.scope, teamId: q.teamId, campusId: q.campusId, month: m, archived });
+      let rows = ranked.map((r) => ({ ...r, campus: q.campus, teamName: q.teamName }));
       rows = rows.map((r) => ({
         kind: 'points',
         photo: null,

@@ -21,6 +21,7 @@ Send `Authorization: Bearer <Clerk session token>`. Accounts are not created by 
 | GET | `/api/teams/:id` | Active linked user | Team details |
 | GET | `/api/teams/:id/members` | Organizer or assigned Manager | Active members |
 | POST | `/api/teams` | Organizer | `name`, `campusId`, optional `description` |
+| PATCH | `/api/teams/:id` | Organizer | `name` and/or `managerId` (null removes), `reason`; one manager per team (409 `TEAM_MANAGER_EXISTS`), one team per manager; history + audit in one transaction |
 | PATCH | `/api/teams/:id/status` | Organizer | `isOperational` boolean |
 | PATCH | `/api/teams/:id/manager` | Organizer | `managerId`, `expectedManagerId`, `reason` |
 | GET | `/api/users` | Organizer | Users excluding deleted accounts |
@@ -37,10 +38,13 @@ Send `Authorization: Bearer <Clerk session token>`. Accounts are not created by 
 | POST | `/api/users/:id/restore` | Organizer | `reason`; restores inactive account |
 | GET | `/api/rankings/options` | Public | Campuses and teams for filters |
 | GET | `/api/rankings/public-summary` | Public | `campusId`; current-month Top 3 and team leaders, without user IDs |
-| GET | `/api/rankings`, `/api/rankings/archived` | Active linked user | `scope`, `teamId` or `campusId`, `year`, `month`; members only, dense rank |
+| GET | `/api/rankings`, `/api/rankings/archived` | Active linked user | `scope`, `teamId` or `campusId`, `year`, `month`; Members and Managers, month-only totals, `DENSE_RANK`; one team or one campus per request (no combined board) |
 | GET | `/api/rankings/months` | Active linked user | Closed months, oldest first |
 | GET | `/api/points/me` | Active linked user | Optional `year`, `month`, `limit` (default 50, max 500) |
 | GET | `/api/points/me/summary` | Active linked user | Optional `year`, `month`; totals from SQL `SUM` |
+| GET | `/api/points/team-history` | Manager (team they manage) or Organizer (entries they recorded) | Optional `year`+`month` (default current), `limit` (max 500, default 200); entries with recipient, points, activity, reason, time, recorder, `awardedByMe`; month totals per person and for the team |
+| POST | `/api/points` | Organizer (any Member or Manager) or Manager (own team members) | `{userId, points (-100..100, ≠0), activityName, reason, activityDescription?}`; optional `Idempotency-Key` header (a retry returns the first entry, 200); an identical entry within 10 s is refused (409 `DUPLICATE_POINT_SUBMISSION`) |
+| POST | `/api/points/:entryId/reverse` | Organizer (any entry) or Manager (entries of their own team) | `{reason}`; at most once, `-points`, dated at the original instant (same month); audit `old_values` = original, `new_values` = reversal; a closed month is re-ranked |
 | GET | `/api/teams/:id/overview` | Organizer or assigned Manager | Manager dashboard |
 | GET | `/api/overview`, `/api/dashboard/ratings` | Organizer | Organizer overview |
 | GET | `/api/ratings/ledger` | Organizer | Optional `month`, `campus`, `teamId`, `kind`; newest 1000 point entries |
@@ -53,8 +57,9 @@ Send `Authorization: Bearer <Clerk session token>`. Accounts are not created by 
 | GET | `/api/policies` | Active linked user | Current policy values |
 | PUT | `/api/policies`, `/api/policies/:key` | Organizer | `{key,value}` or `{value}`; audited |
 | GET | `/api/syslog` | Organizer | Optional `level`, `page`, `pageSize` |
-| GET | `/api/archive`, `/api/archive/:month` | Organizer | Month list; snapshot, optional `campus` or `teamId` |
+| GET | `/api/archive`, `/api/archive/:month` | Organizer or Manager | Month list, closed-month corrections and correctable people (Manager: own team); snapshot, optional `campus` or `teamId` |
 | POST | `/api/archive/close` | Organizer | Optional `{year, month}`; publishes a dense-ranked snapshot of an ended month |
+| POST | `/api/archive/corrections` | Organizer (any team) or Manager (own current team, never self) | `{month: 'YYYY-MM' (past), userId, value (-100..100, ≠0), reason}`; immutable compensating entry inside that month; a closed month's Team and Campus rankings are recomputed in the same transaction (`last_revised_at`, one `MONTHLY_RANKING_REVISED` audit row with before/after per changed row) |
 | POST | `/api/assistant` | Active linked user | `{question}`; proxied to the private chatbot service |
 | GET | `/api/assistant/data/*` | Active linked user, per-route rules | Read-only chatbot data |
 

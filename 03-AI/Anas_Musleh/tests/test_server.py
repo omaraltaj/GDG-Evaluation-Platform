@@ -17,6 +17,7 @@ def client(monkeypatch):
     monkeypatch.setattr(config, "GEMINI_API_KEY", "test-gemini-key")
     monkeypatch.setattr(server, "get_client", lambda: object())
     monkeypatch.setattr(server, "ToolExecutor", lambda c, token, today: SimpleNamespace(token=token))
+    monkeypatch.setattr(server, "quick_answer", lambda question, executor: None)   # tested in test_quick.py
     return TestClient(server.app)
 
 

@@ -32,8 +32,8 @@ roster AS (
   JOIN users ru ON ru.user_id = h.user_id
   CROSS JOIN bounds b
   WHERE t.campus_id = $1
-    AND h.role_at_time = 'Member'
-    AND ru.role = 'Member'
+    AND h.role_at_time IN ('Member', 'Manager')
+    AND ru.role IN ('Member', 'Manager')
     AND ru.deleted_at IS NULL
     AND h.effective_from < b.month_end
     AND (
@@ -61,7 +61,7 @@ totals AS (
       JOIN teams ht ON ht.team_id = h.team_id
       WHERE h.user_id = p.user_id
         AND ht.campus_id = $1
-        AND h.role_at_time = 'Member'
+        AND h.role_at_time IN ('Member', 'Manager')
         AND p.effective_at >= h.effective_from
         AND (
           h.effective_to IS NULL

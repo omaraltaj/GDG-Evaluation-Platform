@@ -31,7 +31,8 @@ export default function UserDialog({
   const [f, setF] = useState(() => ({
     name: x ? x.name : "",
     email: x ? x.email : "",
-    campus: x ? x.campus : fixedTeam ? me.campus : "jenin",
+    // An organizer has no campus; start from Jenin so switching to Member/Manager lists teams.
+    campus: x ? x.campus || "jenin" : fixedTeam ? me.campus : "jenin",
     role: x ? x.role : kind === "manager" ? "manager" : "member",
     teams: x ? [...x.teams] : fixedTeam ? [fixedTeam] : [],
     photo: x?.photo || null,
@@ -47,7 +48,8 @@ export default function UserDialog({
   const campusTeams = (meta ? meta.teams : []).filter(
     (t) => t.campus === f.campus,
   );
-  const multi = f.role === "manager" || membersInMultipleTeams;
+  // A manager runs exactly one team; only members may span several (policy).
+  const multi = f.role !== "manager" && membersInMultipleTeams;
 
   const changeCampus = (v) => setF((s) => ({ ...s, campus: v, teams: [] }));
   const changeRole = (v) => setF((s) => ({ ...s, role: v, teams: [] }));
@@ -58,6 +60,10 @@ export default function UserDialog({
     );
 
   const save = async () => {
+    if (f.role !== "organizer" && !f.teams.length) {
+      setErr(tr("اختر الفريق."));
+      return;
+    }
     setBusy(true);
     setErr("");
     try {
@@ -70,7 +76,7 @@ export default function UserDialog({
         teams: f.role === "organizer" ? [] : f.teams,
       };
       await usersApi.updateUser(x.id, body);
-      toast.success(x ? tr("تم حفظ التعديلات") : tr("تمت الإضافة"));
+      toast.success(x && x.role !== f.role ? tr("تم تغيير الدور وحفظ التعديلات") : x ? tr("تم حفظ التعديلات") : tr("تمت الإضافة"));
       onDone && onDone();
       onClose();
     } catch (e) {
@@ -188,6 +194,12 @@ export default function UserDialog({
       </div>
       {fixedTeam && (
         <p className="hint">{tr("يُضاف العضو إلى فريقك فقط بدور Member.")}</p>
+      )}
+      {x && x.role === "organizer" && x.id !== me.id && f.role !== "organizer" && (
+        <p className="hint">{tr("سيفقد هذا الحساب صلاحيات المنظّم. اختر الحرم والفريق؛ ولكل فريق مدير واحد فقط.")}</p>
+      )}
+      {x && x.id === me.id && me.role === "organizer" && (
+        <p className="hint">{tr("لا يمكنك تغيير دورك أو تعطيل حسابك بنفسك؛ يقوم بذلك منظّم آخر.")}</p>
       )}
       {err && (
         <p className="err" role="alert">

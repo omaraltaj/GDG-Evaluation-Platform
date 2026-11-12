@@ -30,8 +30,8 @@ export function createHttp({ baseUrl, getToken, onUnauthorized, fetchImpl, origi
     return url.toString();
   }
 
-  async function request(method, path, { params, body, auth = true } = {}) {
-    const headers = { Accept: 'application/json' };
+  async function request(method, path, { params, body, auth = true, headers: extra } = {}) {
+    const headers = { Accept: 'application/json', ...(extra || {}) };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (auth && getToken) {
       const token = await getToken();

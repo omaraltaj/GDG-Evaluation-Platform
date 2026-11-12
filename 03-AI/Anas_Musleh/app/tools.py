@@ -32,7 +32,9 @@ TOOL_SPECS = [
      "description": "Total points the CURRENT manager/organizer awarded (as the actor) in a month.",
      "properties": {"month": MONTH, "year": YEAR}, "required": []},
     {"name": "get_leaderboard",
-     "description": "Monthly ranking (dense ranking, ties share a rank) of a team or a campus. Month-only points, never lifetime.",
+     "description": "Monthly ranking (dense ranking, ties share a rank) of a team or a campus. Month-only points, never lifetime. "
+                    "Includes managers. totalPoints = the whole team's/campus's points that month: use it for "
+                    "'how many points does my team have'.",
      "properties": {"scope": {"type": "string", "description": "'team' or 'campus'."},
                     "campus_name": CAMPUS, "team_name": TEAM, "month": MONTH, "year": YEAR,
                     "limit": {"type": "integer", "description": "Return only the first N rows (e.g. 3, 5)."}},

@@ -29,7 +29,7 @@ WHERE r.ranking_scope = $1
   AND r.year = $2
   AND r.month = $3
   AND r.archived_at IS NOT NULL
-  AND u.role = 'Member'
+  AND u.role IN ('Member', 'Manager')
   AND u.deleted_at IS NULL
 
   AND (

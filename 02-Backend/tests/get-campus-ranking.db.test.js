@@ -153,13 +153,16 @@ test('Monthly Campus leaderboard calculates correctly in PostgreSQL', {
           rows.map(row => [row.userId, row])
         );
 
-        assert.equal(rows.length, 7);
+        // Managers take part in the regular campus leaderboard.
+        assert.equal(rows.length, 9);
 
         assert.deepEqual(
           [...byId.keys()].sort((a, b) => a - b),
-          [6, 7, 8, 10, 11, 13, 16]
+          [5, 6, 7, 8, 9, 10, 11, 13, 16]
         );
 
+        assert.equal(byId.get(5).totalPoints, 20);
+        assert.equal(byId.get(9).totalPoints, 0);
         assert.equal(byId.get(6).totalPoints, 70);
         assert.equal(byId.get(7).totalPoints, 30);
         assert.equal(byId.get(13).totalPoints, 25);
@@ -171,7 +174,7 @@ test('Monthly Campus leaderboard calculates correctly in PostgreSQL', {
     );
 
     await t.test(
-      'uses consecutive dense ranks once Managers are excluded',
+      'uses dense ranks with Managers alongside Members',
       async () => {
         const rows = await getCampusRanking(
           testPool, 1, 2026, 10
@@ -183,12 +186,12 @@ test('Monthly Campus leaderboard calculates correctly in PostgreSQL', {
 
         assert.deepEqual(
           rows.map(row => row.rank),
-          [1, 2, 3, 4, 5, 6, 7]
+          [1, 2, 3, 4, 4, 5, 6, 6, 7]
         );
 
-        assert.equal(byId.has(5), false, 'Manager excluded');
-        assert.equal(byId.has(9), false, 'Manager excluded');
+        assert.equal(byId.get(5).rank, 4, 'Manager tied with a Member');
         assert.equal(byId.get(8).rank, 4);
+        assert.equal(byId.get(9).rank, 6);
         assert.equal(byId.get(10).rank, 6);
         assert.equal(typeof rows[0].rank, 'number');
         assert.equal(typeof rows[0].totalPoints, 'number');

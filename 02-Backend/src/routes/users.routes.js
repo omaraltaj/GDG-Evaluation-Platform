@@ -11,12 +11,20 @@ const deletionRepository = require('../repositories/user-deletion.repository')
 
 const router = express.Router()
 
+// An organizer never removes their own access (demotion, deactivation or deletion): another
+// organizer must do it, so the platform cannot be left without someone who can undo a mistake.
+const SELF_LOCKOUT = { error: { code: 'SELF_LOCKOUT', message: 'You cannot demote, deactivate or delete your own organizer account' } }
+
 // Edits business fields while preserving verified identity, manager coverage and assignment history.
 router.patch('/:id', loadProjectUser, requireRole('organizer'), async (req, res) => {
   const id = parsePositiveId(req.params.id)
   if (id === null || id > 2147483647) return res.status(400).json({ error: { code: 'INVALID_USER_ID', message: 'A valid positive PostgreSQL user ID is required' } })
   const validation = validateUpdateUser(req.body)
   if (validation.error) return res.status(400).json({ error: { code: 'INVALID_USER_DATA', message: validation.error } })
+  if (id === req.projectUser.id &&
+      ((validation.value.role && validation.value.role !== 'organizer') || validation.value.isActive === false)) {
+    return res.status(409).json(SELF_LOCKOUT)
+  }
   const result = await userUpdateService.updateUser(id, validation.value, req.projectUser.id)
   const failures = {
     actor_forbidden: [403, 'FORBIDDEN', 'An active organizer is required'],
@@ -85,6 +93,7 @@ for (const [method, path, operation] of [
         typeof body.reason !== 'string' || !body.reason.trim() || body.reason.trim().length > 1000) {
       return res.status(400).json({ error: { code: 'INVALID_DELETION_DATA', message: 'Provide only a reason of 1 to 1000 characters' } })
     }
+    if (method === 'delete' && id === req.projectUser.id) return res.status(409).json(SELF_LOCKOUT)
     const result = await operation(id, req.projectUser.id, body.reason.trim())
     const failures = {
       actor_forbidden: [403, 'FORBIDDEN', 'An active organizer is required'],
@@ -140,6 +149,10 @@ router.patch(
           message: 'Provide only isActive as a boolean',
         },
       })
+    }
+
+    if (id === req.projectUser.id && body.isActive === false) {
+      return res.status(409).json(SELF_LOCKOUT)
     }
 
     const result = await repository.setUserActiveStatus(

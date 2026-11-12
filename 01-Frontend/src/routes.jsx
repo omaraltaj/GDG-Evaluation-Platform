@@ -38,6 +38,8 @@ export const ROUTES = [
   { path: "/organizer/points", roles: ["organizer"], element: OrgPoints },
   { path: "/organizer/evals", roles: ["organizer"], element: Evaluations },
   { path: "/organizer/archive", roles: ["organizer"], element: Archive },
+  // Managers correct closed months of their own team (same page, without "close month").
+  { path: "/manager/archive", roles: ["manager"], element: Archive },
   { path: "/organizer/audit", roles: ["organizer"], element: AuditLog },
   { path: "/organizer/syslog", roles: ["organizer"], element: SystemLog },
   { path: "/organizer/policies", roles: ["organizer"], element: Policies },

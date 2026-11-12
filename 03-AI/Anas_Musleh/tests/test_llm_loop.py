@@ -154,6 +154,7 @@ def test_failed_question_leaves_no_trace_in_history(monkeypatch):
         bot.ask("old question")
     assert bot.history == []                                  # nothing kept
     state["fail"] = False
+    llm.reset_model_health()                                  # the quota window has passed
     turn = bot.ask("new question")
     assert turn.answer.startswith("حصلت")
     assert [c.role for c in bot.history] == ["user", "model", "user", "model"]
@@ -203,3 +204,90 @@ def test_model_rejecting_the_thinking_setting_is_retried_without_it(monkeypatch)
     fake.generate_content = generate
     assert bot.ask("x").answer == "حصلت على 25 نقطة"
     assert seen[0] is not None and seen[1] is None
+
+
+
+def test_models_out_of_quota_are_skipped_by_later_questions(monkeypatch):
+    """The real failure: every question re-asked every exhausted model. Now one failed pass is enough;
+    the next question fails at once with a quota code, without calling Google again."""
+    import pytest
+    from google.genai import errors
+
+    from app.server import classify_provider_error
+
+    bot, fake = make(monkeypatch)
+    calls = []
+
+    def exhausted(model, contents, config):
+        calls.append(model)
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "Quota exceeded. Please retry in 17h39m50s.",
+                                                 "status": "RESOURCE_EXHAUSTED"}})
+
+    fake.generate_content = exhausted
+    with pytest.raises(errors.ClientError):
+        bot.ask("first")
+    assert len(calls) == len(llm.model_chain())
+    second, _ = make(monkeypatch)
+    with pytest.raises(llm.ModelsUnavailable) as caught:
+        second.ask("second")
+    assert len(calls) == len(llm.model_chain()), "no new Gemini call while every model cools down"
+    assert classify_provider_error(caught.value) == "AI_QUOTA_EXCEEDED"
+
+
+def test_retry_delay_is_read_from_the_quota_error():
+    from google.genai import errors
+
+    err = errors.ClientError(429, {"error": {"code": 429, "message": "x", "status": "RESOURCE_EXHAUSTED",
+                                             "details": [{"retryDelay": "63590s"}]}})
+    assert llm._retry_after_seconds(err) == 63590
+    err = errors.ClientError(429, {"error": {"code": 429, "message": "Please retry in 1h2m3s.", "status": "X"}})
+    assert llm._retry_after_seconds(err) == 3723
+
+
+def test_next_question_starts_on_the_model_that_answered(monkeypatch):
+    from google.genai import errors
+
+    monkeypatch.setattr(llm.config, "GEMINI_MODEL", "busy-model")
+    monkeypatch.setattr(llm.config, "GEMINI_FALLBACK_MODELS", ["spare-model"])
+    tried = []
+    bot, fake = make(monkeypatch)
+    real = fake.generate_content
+
+    def generate(model, contents, config):
+        tried.append(model)
+        if model == "busy-model":
+            raise errors.ServerError(503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}})
+        return real(model, contents, config)
+
+    fake.generate_content = generate
+    bot.ask("first")
+    tried.clear()
+    second, fake2 = make(monkeypatch)
+    fake2.generate_content = generate
+    fake.calls = 0
+    second.ask("second")
+    assert tried[0] == "spare-model", "a new request does not start on the model that just failed"
+
+
+def test_thinking_rejection_is_remembered_per_model(monkeypatch):
+    from google.genai import errors
+
+    seen = []
+
+    def rejecting(real):
+        def generate(model, contents, config):
+            seen.append(config.thinking_config)
+            if config.thinking_config is not None:
+                raise errors.ClientError(400, {"error": {"code": 400, "message": "thinking_level is not supported",
+                                                         "status": "INVALID_ARGUMENT"}})
+            return real(model, contents, config)
+        return generate
+
+    bot, fake = make(monkeypatch)
+    fake.generate_content = rejecting(fake.generate_content)
+    bot.ask("first")
+    seen.clear()
+    second, fake2 = make(monkeypatch)
+    fake2.generate_content = rejecting(fake2.generate_content)
+    second.ask("second")
+    assert seen and all(c is None for c in seen), "the rejected setting is not sent again"

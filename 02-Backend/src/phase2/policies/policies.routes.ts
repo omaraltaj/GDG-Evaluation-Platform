@@ -15,7 +15,8 @@ const RULES: Record<string, Rule> = {
 };
 
 // Accepting these would claim behaviour the backend and schema do not provide.
-const NOT_AVAILABLE = new Set(['managerCanEditOrMoveMembers', 'membersInMultipleTeams', 'multipleManagersPerTeam']);
+// globalLeaderboardEnabled: Jenin and Ramallah keep strictly separate leaderboards (no combined board).
+const NOT_AVAILABLE = new Set(['managerCanEditOrMoveMembers', 'membersInMultipleTeams', 'multipleManagersPerTeam', 'globalLeaderboardEnabled']);
 
 async function readPolicies(pool: Pick<Pool, 'query'>) {
   const result = await pool.query('SELECT policy_key AS key, policy_value AS value FROM system_policies');

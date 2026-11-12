@@ -150,11 +150,11 @@ test('MVP backend against PostgreSQL', { skip: !process.env.DB_NAME, timeout: 12
     assert.equal(september.body.data.find((r) => r.fullName === 'Ann').totalPoints, 5);
   });
 
-  await t.test('rankings use dense rank and exclude Managers and soft-deleted users', async () => {
+  await t.test('rankings use dense rank, include Managers and exclude soft-deleted users', async () => {
     const { body } = await call('/rankings?scope=team&teamId=1&year=2026&month=10');
     assert.deepEqual(
       body.data.map((r) => [r.rank, r.fullName, r.totalPoints]),
-      [[1, 'Ann', 30], [1, 'Bob', 30], [2, 'Eve', 10]]
+      [[1, 'Manager A', 77], [2, 'Ann', 30], [2, 'Bob', 30], [3, 'Eve', 10]]
     );
   });
 
@@ -188,7 +188,7 @@ test('MVP backend against PostgreSQL', { skip: !process.env.DB_NAME, timeout: 12
     const snapshot = await call('/archive/2026-10?teamId=1');
     assert.deepEqual(
       snapshot.body.data.rows.map((r) => [r.rank, r.name, r.total, r.tie]),
-      [[1, 'Ann', 30, true], [1, 'Bob', 30, true], [2, 'Eve', 10, false]]
+      [[1, 'Manager A', 77, false], [2, 'Ann', 30, true], [2, 'Bob', 30, true], [3, 'Eve', 10, false]]
     );
 
     const again = await call('/archive/close', ORGANIZER, { body: { year: 2026, month: 10 } });
@@ -256,11 +256,11 @@ test('MVP backend against PostgreSQL', { skip: !process.env.DB_NAME, timeout: 12
     assert.equal(member.body.data.totalPoints, 30);
 
     const board = await call('/assistant/leaderboard?scope=team&teamId=1&year=2026&month=10&limit=1', MEMBER_ANN);
-    assert.deepEqual(board.body.data.entries, [{ rank: 1, name: 'Ann', totalPoints: 30 }]);
+    assert.deepEqual(board.body.data.entries, [{ rank: 1, name: 'Manager A', totalPoints: 77 }]);
 
     const mine = await call('/assistant/my-ranking?scope=team&year=2026&month=10', MEMBER_ANN);
     assert.equal(mine.body.data.peopleSharingMyRank, 2);
-    assert.equal(mine.body.data.gapToFirst, 0);
+    assert.equal(mine.body.data.gapToFirst, 47);
 
     const evals = await call('/assistant/my-evaluations?year=2026&month=10', MANAGER_A);
     assert.equal(evals.body.data.count, 1);

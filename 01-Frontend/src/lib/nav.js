@@ -12,6 +12,7 @@ manager: [
   LB,
   { to: "/manager", icon: "users", label: "فريقي" },
   { to: "/my-points", icon: "star", label: "تقييمي العام" },
+  { to: "/manager/archive", icon: "archive", label: "تصحيح الأشهر المغلقة" },
   BOT,
 ],
   organizer: [

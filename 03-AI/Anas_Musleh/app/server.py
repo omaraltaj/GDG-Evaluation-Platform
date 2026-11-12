@@ -17,7 +17,8 @@ from pydantic import BaseModel, Field
 from . import config
 from .backend_client import get_client
 from .errors import BackendError
-from .llm import Assistant, model_chain
+from .llm import Assistant, ModelsUnavailable, model_chain
+from .quick import quick_answer
 from .tools import ToolExecutor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -29,6 +30,8 @@ ai_status: dict = {"ok": None, "code": None, "detail": None, "model": None}
 
 def classify_provider_error(error: Exception) -> str:
     """Maps a Gemini failure to a stable code the backend and frontend can act on."""
+    if isinstance(error, ModelsUnavailable):
+        return "AI_QUOTA_EXCEEDED" if error.quota else "AI_UNAVAILABLE"
     if isinstance(error, genai_errors.APIError):
         message = str(error.message or "").lower()
         if error.code in (401, 403) or "api key" in message:
@@ -106,7 +109,13 @@ def chat(body: ChatRequest, authorization: str = Header(default=""), x_internal_
 
     token = authorization[7:].strip()
     try:
-        assistant = Assistant(ToolExecutor(get_client(), token, config.today()))
+        executor = ToolExecutor(get_client(), token, config.today())
+        # How-to questions and "my / my team's points this month" need no AI call: instant, and they
+        # keep working when every Gemini model is out of quota.
+        quick = quick_answer(body.question, executor)
+        if quick is not None:
+            return {"answer": quick}
+        assistant = Assistant(executor)
         return {"answer": assistant.ask(body.question).answer}
     except BackendError as error:
         if error.status == 401:
@@ -115,5 +124,8 @@ def chat(body: ChatRequest, authorization: str = Header(default=""), x_internal_
         raise _unavailable("BACKEND_UNAVAILABLE")
     except Exception as error:                            # Gemini down, quota, retired model, network
         code = classify_provider_error(error)
-        logger.error("Chat failed: %s %s: %s\n%s", code, type(error).__name__, str(error)[:500], traceback.format_exc())
+        if isinstance(error, (ModelsUnavailable, TimeoutError)) or code in ("AI_QUOTA_EXCEEDED", "AI_UNAVAILABLE"):
+            logger.warning("Chat failed: %s %s: %s", code, type(error).__name__, str(error)[:200])
+        else:
+            logger.error("Chat failed: %s %s: %s\n%s", code, type(error).__name__, str(error)[:500], traceback.format_exc())
         raise _unavailable(code)

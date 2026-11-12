@@ -5,7 +5,8 @@ import { type ProjectRequest, sendError } from '../shared/http';
 const MAX_QUESTION_LENGTH = 2000;
 const WINDOW_MS = 60_000;
 const MAX_QUESTIONS_PER_WINDOW = 20;
-const DEFAULT_TIMEOUT_MS = 60_000;
+// The chatbot stops itself after ~25 s (CHAT_DEADLINE_S); this is the outer safety net.
+const DEFAULT_TIMEOUT_MS = 30_000;
 const KNOWN_REASONS = new Set([
   'CHATBOT_NOT_CONFIGURED', 'AI_KEY_MISSING', 'AI_KEY_INVALID', 'AI_MODEL_UNAVAILABLE',
   'AI_QUOTA_EXCEEDED', 'AI_REQUEST_REJECTED', 'AI_UNAVAILABLE', 'BACKEND_UNAVAILABLE'

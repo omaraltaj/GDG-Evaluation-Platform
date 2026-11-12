@@ -82,10 +82,18 @@ export const AUDIT_ACTION_AR = {
   PERFORMANCE_EVALUATION_CREATED: 'إنشاء تقييم أداء',
   approve_registration: 'قبول طلب انضمام',
   reject_registration: 'رفض طلب انضمام',
+  update_team: 'تعديل فريق',
+  CLOSED_MONTH_CORRECTION: 'تصحيح شهر مغلق',
+  MONTHLY_RANKING_REVISED: 'إعادة احتساب ترتيب شهر مغلق',
+  update_team_manager: 'تعديل مدير فريق',
+  update_user: 'تعديل حساب',
 };
 export const AUDIT_ENTITY_AR = {
   performance_evaluations: 'تقييم أداء',
   registration_requests: 'طلب انضمام',
+  teams: 'فريق',
+  monthly_rankings: 'ترتيب شهري',
+  users: 'حساب',
 };
 const invert = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [v, k]));
 export const AUDIT_ACTION_CODE = invert(AUDIT_ACTION_AR);
