@@ -8,3 +8,5 @@
 \ir migrations/005_manager_evaluation_four_criteria.sql
 \ir migrations/006_asia_hebron_timestamps.sql
 \ir migrations/007_snapshot_rows_per_team_and_campus.sql
+\ir migrations/008_enable_remaining_modules.sql
+\ir migrations/009_registration_approval_flow.sql

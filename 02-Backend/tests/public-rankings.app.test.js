@@ -109,7 +109,7 @@ test('Public rankings work in the real Express app', {
     assert.equal(body.error.code, 'UNAUTHENTICATED');
   });
 
-  for (const path of ['/api/overview', '/api/archive', '/api/activities', '/api/teams/1/overview', '/api/assistant/data/audit-logs']) {
+  for (const path of ['/api/overview', '/api/archive', '/api/activities', '/api/teams/1/overview', '/api/assistant/data/audit-logs', '/api/policies', '/api/syslog', '/api/awards', '/api/ratings/targets']) {
     await t.test(`${path} requires login`, async () => {
       const { response, body } = await request(path);
 

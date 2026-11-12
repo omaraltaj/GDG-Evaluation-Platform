@@ -94,6 +94,7 @@ test('MVP backend against PostgreSQL', { skip: !process.env.DB_NAME, timeout: 12
   const dashboards = createDashboardHandlers(pool);
   app.get('/overview', dashboards.organizerOverview);
   app.get('/dashboard', dashboards.organizerDashboard);
+  app.get('/ledger', dashboards.pointsLedger);
   app.get('/teams/:id/overview', (req, _res, next) => {
     req.projectTeam = { id: 1, campusId: 1, name: 'Technical', isOperational: true };
     next();
@@ -297,6 +298,24 @@ test('MVP backend against PostgreSQL', { skip: !process.env.DB_NAME, timeout: 12
 
     const ledger = await pool.query('SELECT SUM(points)::int AS sum FROM point_entries WHERE user_id = 9');
     assert.equal(ledger.rows[0].sum, 20);
+  });
+
+  await t.test('the points ledger attributes entries to the team at the time and filters', async () => {
+    const july = await call('/ledger?month=2026-07');
+    assert.deepEqual(
+      july.body.data.map((r) => [r.userName, r.activityPoints, r.teamsLabel, r.campus, r.archived]),
+      [['Tom', 8, 'PR', 'ramallah', true], ['Tom', 12, 'Technical', 'jenin', true]]
+    );
+    assert.equal(july.body.data[0].type, 'activity');
+
+    const jenin = await call('/ledger?month=2026-07&campus=jenin');
+    assert.deepEqual(jenin.body.data.map((r) => r.activityPoints), [12]);
+    const team2 = await call('/ledger?month=2026-07&teamId=2');
+    assert.deepEqual(team2.body.data.map((r) => r.activityPoints), [8]);
+
+    assert.deepEqual((await call('/ledger?kind=performance')).body.data, []);
+    assert.equal((await call('/ledger?month=bad')).status, 400);
+    assert.equal((await call('/ledger?campus=gaza')).status, 400);
   });
 
   await t.test('invalid chatbot queries return 400', async () => {

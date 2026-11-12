@@ -5,13 +5,7 @@
 // and the page works (see docs/BACKEND_INTEGRATION.md).
 
 export const COMING_SOON_REAL = Object.freeze([
-  '/ratings',
-  '/activities',
-  '/organizer/awards',
   '/organizer/news',
-  '/organizer/points',
-  '/organizer/syslog',
-  '/organizer/policies',
 ]);
 
 const SET = new Set(COMING_SOON_REAL);

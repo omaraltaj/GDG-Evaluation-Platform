@@ -5,7 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHttp } from '../httpCore.js';
+import { createHttp, waitForToken } from '../httpCore.js';
 import { createBackend } from './client.js';
 import { translateServerError } from './errorsAr.js';
 import { monthOf, weightedManagerScore } from './adapters.js';
@@ -55,6 +55,10 @@ function fakeServer({ me, token = 'tok-1' } = {}) {
     }
     if (p === '/api/auth/me') return ok({ id: current.id, name: current.name, role: current.role, isActive: true, teamId: current.teamId });
     if (p === '/api/campuses') return ok(state.campuses);
+    if (p === '/api/registrations' && method === 'GET') return ok([{ id: 7, name: 'سارة', email: 's@gdg.ps', status: 'pending', requestedAt: '2026-11-01T08:00:00Z' }]);
+    if (p === '/api/registrations/count') return ok({ pending: 1 });
+    if (/^\/api\/registrations\/\d+\/approve$/.test(p)) return ok({ user: { id: 400, role: body.role }, emailStatus: 'sent' });
+    if (/^\/api\/registrations\/\d+\/reject$/.test(p)) return ok({ status: 'rejected', emailStatus: 'sent' });
     if (p === '/api/teams' && method === 'GET') return ok(state.teams);
     if (p === '/api/teams' && method === 'POST') {
       const allowed = ['name', 'campusId', 'description'];
@@ -109,6 +113,11 @@ function fakeServer({ me, token = 'tok-1' } = {}) {
       return ok(u.searchParams.get('month') === '10'
         ? { total: 610, positive: 620, negative: -10, entryCount: 61, allTimeTotal: 605, rank: 2 }
         : { total: -5, positive: 0, negative: -5, entryCount: 1, allTimeTotal: 605, rank: 4 });
+    }
+    if (p === '/api/policies' && method === 'GET') return ok({ maxPointsPerOperation: 50, globalLeaderboardEnabled: true });
+    if (p.startsWith('/api/policies/') && method === 'PUT') return ok({ maxPointsPerOperation: body.value, globalLeaderboardEnabled: true });
+    if (p === '/api/awards') {
+      return ok({ campus: 'jenin', month: '2026-10', months: [], groups: [{ teamId: '10', name: 'Technical', leader: { id: '200', name: 'ليان', photo: null, total: 75 } }], winner: null, winnerActivities: [], stale: false, ratedCount: 1, memberCount: 1, demo: false, news: [] });
     }
     if (p === '/api/rankings/months') return ok(['2026-08', '2026-09']);
     if (p === '/api/rankings/public-summary') {
@@ -231,16 +240,27 @@ test('users: backend rows map to the UI shape (string ids, campus keys, status)'
   assert.equal((await s.backend.listUsers({ role: 'manager' })).length, 1);
 });
 
-test('users: create sends only the fields the backend accepts; update sends only changes + reason', async () => {
+test('registrations: list, count, approve with campus/team ids, reject with optional reason; no manual creation', async () => {
   const s = fakeServer();
-  const created = await s.backend.createUser({ name: ' سارة ', email: 's@gdg.ps', role: 'member', teams: ['10'], password: 'ignored' });
-  assert.deepEqual(s.calls.find((c) => c.method === 'POST' && c.path === '/api/users').body, { name: 'سارة', email: 's@gdg.ps', role: 'member', teamId: 10 });
-  assert.equal(created.id, '400');
-  assert.equal(created.invitation, 'sent');
+  assert.equal(s.backend.createUser, undefined, 'accounts come only from approved registrations');
+  assert.deepEqual(await s.backend.registrations(), [{ id: '7', name: 'سارة', email: 's@gdg.ps', requestedAt: '2026-11-01T08:00:00Z' }]);
+  assert.equal(await s.backend.pendingRegistrationCount(), 1);
 
-  await assert.rejects(() => s.backend.createUser({ name: 'x', email: 'x@y.z', role: 'organizer', teams: [] }), (e) => e.status === 400);
+  await s.backend.approveRegistration('7', { role: 'member', campus: 'ramallah', teamId: '11' });
+  assert.deepEqual(s.calls.at(-1).body, { role: 'member', campusId: 2, teamId: 11 });
+  assert.equal(s.calls.at(-1).path, '/api/registrations/7/approve');
+  await s.backend.approveRegistration('7', { role: 'organizer', campus: 'jenin', teamId: '10' });
+  assert.deepEqual(s.calls.at(-1).body, { role: 'organizer' }, 'an organizer never carries a team');
+  await assert.rejects(() => s.backend.approveRegistration('7', { role: 'manager', campus: 'jenin', teamId: '' }), (e) => e.status === 400);
 
-  s.calls.length = 0;
+  await s.backend.rejectRegistration('7', '  ');
+  assert.deepEqual(s.calls.at(-1).body, {});
+  await s.backend.rejectRegistration('7', ' ليس عضوًا ');
+  assert.deepEqual(s.calls.at(-1).body, { reason: 'ليس عضوًا' });
+});
+
+test('users: update sends only changes + reason', async () => {
+  const s = fakeServer();
   await s.backend.updateUser('200', { name: 'ليان أبو سعدة', email: 'u@gdg.ps', role: 'member', teams: ['10'] });
   const patch = s.calls.find((c) => c.method === 'PATCH');
   assert.deepEqual(Object.keys(patch.body).sort(), ['name', 'reason']);
@@ -327,10 +347,12 @@ test('points: assignable members — organizer sees all active members, manager 
   assert.deepEqual(await mem.backend.assignableMembers(), []);
 });
 
-test('not supported yet: policies are read-only defaults, edit is refused with a clear 501', async () => {
+test('policies are read from and saved to the backend', async () => {
   const s = fakeServer();
   assert.equal((await s.backend.policies()).maxPointsPerOperation, 50);
-  await assert.rejects(() => s.backend.setPolicy('x', 1), (e) => e.status === 501 && e.details.code === 'NOT_SUPPORTED_BY_BACKEND');
+  assert.equal((await s.backend.setPolicy('maxPointsPerOperation', 40)).maxPointsPerOperation, 40);
+  assert.deepEqual(s.calls.at(-1).body, { value: 40 });
+  assert.equal(s.calls.at(-1).path, '/api/policies/maxPointsPerOperation');
 });
 
 /* ------------------------------------------------- Phase 2: rankings / audit / evaluations */
@@ -421,6 +443,13 @@ test('leaderboard (page shape): public rankings by points, current vs archived m
   assert.equal(s.calls.at(-1).search, '?scope=campus&year=2026&month=10&campusId=1');
 });
 
+test('hall: signed-in users get selectable leader IDs from /awards', async () => {
+  const s = fakeServer();
+  const h = await s.backend.hall({ campus: 'jenin', signedIn: true });
+  assert.equal(h.groups[0].leader.id, '200');
+  assert.match(s.calls.at(-1).auth, /^Bearer .+/);
+});
+
 test('full rankings send the signed-in token', async () => {
   const s = fakeServer();
   await s.backend.rankings({ scope: 'campus', campusId: '1', month: '2026-10' });
@@ -482,4 +511,25 @@ test('points: addPoints uses the typed activity name, and falls back to the reas
   await s.backend.addPoints({ userId: '200', value: -5, reason: 'تأخر' });
   const b = s.calls.filter((c) => c.path === '/api/points' && c.method === 'POST').pop();
   assert.equal(b.body.activityName, 'تأخر');
+});
+
+test('waitForToken waits for a late Clerk token and gives up cleanly', async () => {
+  let calls = 0;
+  assert.equal(await waitForToken(async () => (++calls < 3 ? null : 'tok'), { delayMs: 1 }), 'tok');
+  assert.equal(calls, 3);
+  assert.equal(await waitForToken(async () => null, { attempts: 2, delayMs: 1 }), null);
+});
+
+test('a missing project account does not open the session-expired dialog', async () => {
+  for (const [code, expected] of [['USER_NOT_FOUND_IN_DB', 0], ['UNAUTHENTICATED', 1]]) {
+    let opened = 0;
+    const http = createHttp({
+      baseUrl: 'http://api.test/api',
+      getToken: async () => 'tok',
+      onUnauthorized: () => { opened += 1; },
+      fetchImpl: async () => new Response(JSON.stringify({ error: { code, message: 'x' } }), { status: 401 }),
+    });
+    await assert.rejects(() => http.get('/auth/me'), (e) => e.status === 401);
+    assert.equal(opened, expected, code);
+  }
 });

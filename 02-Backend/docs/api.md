@@ -4,7 +4,7 @@ Base URL: `http://localhost:3001`. Business data is stored in PostgreSQL. Send J
 
 ## Authentication
 
-Send `Authorization: Bearer <Clerk session token>`. Clerk verifies identity; PostgreSQL supplies current project role, active state and deletion state. Client-supplied roles do not establish identity. Inactive/deleted accounts are blocked. API roles are lowercase; database roles are Organizer, Manager and Member.
+Send `Authorization: Bearer <Clerk session token>`. Accounts are not created by hand: a person signs up at Clerk, their first API call records a pending request (`403 REGISTRATION_PENDING`, or `403 REGISTRATION_REJECTED` after a rejection), and an organizer approves it. Clerk verifies identity; PostgreSQL supplies current project role, active state and deletion state. Client-supplied roles do not establish identity. Inactive/deleted accounts are blocked. API roles are lowercase; database roles are Organizer, Manager and Member.
 
 ## Endpoints
 
@@ -24,7 +24,10 @@ Send `Authorization: Bearer <Clerk session token>`. Clerk verifies identity; Pos
 | PATCH | `/api/teams/:id/status` | Organizer | `isOperational` boolean |
 | PATCH | `/api/teams/:id/manager` | Organizer | `managerId`, `expectedManagerId`, `reason` |
 | GET | `/api/users` | Organizer | Users excluding deleted accounts |
-| POST | `/api/users` | Organizer | `name`, `email`, `role` (member/manager), `teamId` |
+| GET | `/api/registrations` | Organizer | Self-registration requests; `status` query `pending` (default), `approved` or `rejected` |
+| GET | `/api/registrations/count` | Organizer | `{ pending }` for the header badge |
+| POST | `/api/registrations/:id/approve` | Organizer | `role` (organizer/manager/member); `campusId` and `teamId` required for manager and member, no team for organizer. Creates the active account and emails the person |
+| POST | `/api/registrations/:id/reject` | Organizer | Optional `reason` (up to 1000 characters); emails the person |
 | PATCH | `/api/users/:id` | Organizer | Changed `name`, `email`, `role`, `teamId`, `isActive`; required `reason` |
 | PATCH | `/api/users/:id/status` | Organizer | `isActive` boolean |
 | POST | `/api/users/:id/invitations/review` | Organizer | `{}`; no email sent |
@@ -40,7 +43,16 @@ Send `Authorization: Bearer <Clerk session token>`. Clerk verifies identity; Pos
 | GET | `/api/points/me/summary` | Active linked user | Optional `year`, `month`; totals from SQL `SUM` |
 | GET | `/api/teams/:id/overview` | Organizer or assigned Manager | Manager dashboard |
 | GET | `/api/overview`, `/api/dashboard/ratings` | Organizer | Organizer overview |
-| GET | `/api/activities` | Organizer or Manager | Empty until the activities module exists |
+| GET | `/api/ratings/ledger` | Organizer | Optional `month`, `campus`, `teamId`, `kind`; newest 1000 point entries |
+| GET | `/api/activities` | Active linked user, scoped by role | Optional `month`; ledger-based activity overview |
+| POST | `/api/activities` | Organizer or team Manager | `{userId,label,points,description,month}`; 0 to 99 points, running month only |
+| GET | `/api/ratings/targets`, `/api/ratings/:userId` | Evaluators; self or evaluator | 15-item scorecards |
+| POST | `/api/ratings` | Organizer or team Manager | `{userId,month,scores,reason,expectedRev}`; each save is a new revision |
+| GET | `/api/awards` | Active linked user | Optional `campus`, `month`; team leaders and member of the month |
+| POST | `/api/awards` | Organizer | `{campus,month,userId}`; must be a current team leader |
+| GET | `/api/policies` | Active linked user | Current policy values |
+| PUT | `/api/policies`, `/api/policies/:key` | Organizer | `{key,value}` or `{value}`; audited |
+| GET | `/api/syslog` | Organizer | Optional `level`, `page`, `pageSize` |
 | GET | `/api/archive`, `/api/archive/:month` | Organizer | Month list; snapshot, optional `campus` or `teamId` |
 | POST | `/api/archive/close` | Organizer | Optional `{year, month}`; publishes a dense-ranked snapshot of an ended month |
 | POST | `/api/assistant` | Active linked user | `{question}`; proxied to the private chatbot service |

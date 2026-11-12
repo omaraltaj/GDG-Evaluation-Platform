@@ -13,6 +13,7 @@ import { FilterBar, Segmented, Select } from '../../components/ui/Form.jsx';
 import { Avatar, Button, Card, IconButton, PageHeader } from '../../components/ui/Primitives.jsx';
 import { Async } from '../../components/ui/States.jsx';
 import { tr } from '../../i18n/index.js';
+import { navigate } from '../../router/router.jsx';
 
 const boldName = (key, name) => {
   const [a, b] = tr(key, { name: '\u0000' }).split('\u0000');
@@ -61,7 +62,7 @@ export default function Members() {
 
   return (
     <>
-      <PageHeader title={tr('الأعضاء')} subtitle={tr('إدارة المستخدمين، التعطيل، الحذف الناعم والاسترجاع')} crumb={tr('الأعضاء')} actions={<Button variant="primary" icon="user-plus" onClick={() => setDlg({ type: 'add' })}>{tr('إضافة مستخدم')}</Button>} />
+      <PageHeader title={tr('الأعضاء')} subtitle={tr('إدارة المستخدمين، التعطيل، الحذف الناعم والاسترجاع')} crumb={tr('الأعضاء')} actions={<Button variant="primary" icon="user-plus" onClick={() => navigate('/organizer/registrations')}>{tr('طلبات الانضمام')}</Button>} />
       <Segmented style={{ marginBottom: 10 }} value={f.tab} onChange={set('tab')} options={[['active', tr('القائمة')], ['deleted', tr('المحذوفون')]]} />
       <FilterBar>
         <Select label={tr('الحرم')} value={f.campus} onChange={set('campus')} options={[['', tr('كل الحرمين')], ['jenin', tr('جنين')], ['ramallah', tr('رام الله')]]} />
@@ -75,7 +76,6 @@ export default function Members() {
         </Async>
       </Card>
 
-      {dlg && dlg.type === 'add' && <UserDialog kind="user" onDone={done} onClose={close} />}
       {dlg && dlg.type === 'edit' && <UserDialog user={dlg.u} kind={dlg.u.role === 'manager' ? 'manager' : 'user'} onDone={done} onClose={close} />}
       {dlg && dlg.type === 'toggle' && (
         <ReasonDialog

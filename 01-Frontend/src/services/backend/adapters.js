@@ -80,9 +80,12 @@ export const AUDIT_ACTION_AR = {
   create_point_entry: 'إضافة نقاط',
   reverse_point_entry: 'عكس عملية نقاط',
   PERFORMANCE_EVALUATION_CREATED: 'إنشاء تقييم أداء',
+  approve_registration: 'قبول طلب انضمام',
+  reject_registration: 'رفض طلب انضمام',
 };
 export const AUDIT_ENTITY_AR = {
   performance_evaluations: 'تقييم أداء',
+  registration_requests: 'طلب انضمام',
 };
 const invert = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [v, k]));
 export const AUDIT_ACTION_CODE = invert(AUDIT_ACTION_AR);

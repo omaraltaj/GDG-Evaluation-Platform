@@ -82,9 +82,8 @@ export function createBackend(http, { now = () => new Date() } = {}) {
       };
     },
 
-    /** The backend stores no policy flags yet: defaults, read-only. */
-    async policies() { return { ...DEFAULT_POLICIES }; },
-    async setPolicy() { throw notSupported('تعديل السياسات'); },
+    async policies() { return { ...DEFAULT_POLICIES, ...(await http.get('/policies')) }; },
+    async setPolicy(key, value) { return { ...DEFAULT_POLICIES, ...(await http.put(`/policies/${encodeURIComponent(key)}`, { value })) }; },
 
     /* ------------------------------------------------------------------- users */
     async listUsers(f = {}) {
@@ -100,22 +99,32 @@ export function createBackend(http, { now = () => new Date() } = {}) {
       return us;
     },
 
-    /** Creates the account and sends a Clerk invitation (no password: Clerk handles sign-in). */
-    async createUser(b) {
-      if (b.role !== 'member' && b.role !== 'manager') {
-        throw new ApiError(400, 'يمكن إضافة عضو أو مدير فقط. حساب المنظّم يُنشأ من قاعدة البيانات.');
+    /* ----------------------------------------------------------- registrations */
+    /** Pending self-registration requests, oldest first (organizer only). */
+    async registrations() {
+      const list = await http.get('/registrations');
+      return list.map((r) => ({ id: String(r.id), name: r.name, email: r.email, requestedAt: r.requestedAt }));
+    },
+    async pendingRegistrationCount() {
+      return (await http.get('/registrations/count')).pending;
+    },
+    /** role: organizer | manager | member; campus: campus key ('jenin'); teamId: required unless organizer. */
+    async approveRegistration(id, { role, campus, teamId }) {
+      const body = { role };
+      if (role !== 'organizer') {
+        if (!campus) throw new ApiError(400, 'اختر الحرم.');
+        if (!teamId) throw new ApiError(400, 'اختر الفريق.');
+        const { campuses } = await directory();
+        const c = campuses.find((x) => campusKey(x.name) === campus);
+        if (!c) throw new ApiError(400, 'اختر الحرم.');
+        body.campusId = c.id;
+        body.teamId = userId(teamId);
       }
-      if (!b.teams || !b.teams.length) throw new ApiError(400, 'اختر الفريق.');
-      const [created, dir] = await Promise.all([
-        http.post('/users', {
-          name: trimmed(b.name),
-          email: trimmed(b.email),
-          role: b.role,
-          teamId: userId(b.teams[0]),
-        }),
-        directory(),
-      ]);
-      return { ...mapUser({ isActive: true, ...created }, dir.teamsById), invitation: created.deliveryStatus || null };
+      return http.post(`/registrations/${userId(id)}/approve`, body);
+    },
+    async rejectRegistration(id, reason) {
+      const r = trimmed(reason || '');
+      return http.post(`/registrations/${userId(id)}/reject`, r ? { reason: r } : {});
     },
 
     /** Sends only the fields that actually changed (the backend rejects an empty change). */
@@ -334,6 +343,9 @@ export function createBackend(http, { now = () => new Date() } = {}) {
       const cur = monthOf(now().toISOString());
       const m = month || cur;
       const archived = m < cur;
+      if (global && !(await self.policies()).globalLeaderboardEnabled) {
+        throw new ApiError(403, 'الترتيب العام غير مفعّل حاليًا.');
+      }
       const [opts, me] = await Promise.all([self.rankingOptions(), http.get('/auth/me').catch(() => null)]);
 
       let queries;
@@ -375,10 +387,14 @@ export function createBackend(http, { now = () => new Date() } = {}) {
 
     /**
      * Welcome page "stars" block from the public summary: the current-month leader of each team.
-     * The summary is deliberately current-month only and carries no user IDs. There is no
-     * awards / news service in the backend yet, so `winner` is null and `news` is empty.
+     * The summary is deliberately current-month only and carries no user IDs. Signed-in users get
+     * the full view from /awards (any closed month, with the IDs the Awards page selects by).
      */
-    async hall({ campus = 'jenin' } = {}) {
+    async hall({ campus = 'jenin', month, signedIn = false } = {}) {
+      if (signedIn) {
+        const hall = await http.get('/awards', { campus, month });
+        return { ...hall, groups: hall.groups.map((g) => ({ ...g, name: teamLabel(g.name) })) };
+      }
       const opts = await self.rankingOptions();
       const camp = opts.campuses.find((c) => c.key === campus) || opts.campuses[0];
       if (!camp) throw new ApiError(400, 'الفرع غير صحيح.');
@@ -392,7 +408,9 @@ export function createBackend(http, { now = () => new Date() } = {}) {
           name: teamLabel(t.teamName),
           leader: t.leader ? { id: null, name: t.leader.name, photo: null, total: t.leader.totalPoints } : null,
         })),
-        winner: null,
+        winner: summary.winner
+          ? { userId: null, name: summary.winner.name, photo: null, total: summary.winner.total, teamName: summary.winner.teamName, campus: camp.key, month: summary.month }
+          : null,
         winnerActivities: [],
         stale: false,
         ratedCount: summary.participants.rated,

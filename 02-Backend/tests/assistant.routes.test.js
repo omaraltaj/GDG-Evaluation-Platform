@@ -57,6 +57,19 @@ test('service failures never leak details', async (t) => {
   assert.ok(!JSON.stringify(body).includes('stack trace'));
 });
 
+test('known chatbot failure codes are passed on as a reason', async (t) => {
+  const retired = await ask(t, { env: ENV, fetchImpl: replying(503, { detail: { code: 'AI_MODEL_UNAVAILABLE' } }) });
+  assert.equal(retired.status, 503);
+  assert.equal(retired.body.error.code, 'ASSISTANT_UNAVAILABLE');
+  assert.equal(retired.body.error.reason, 'AI_MODEL_UNAVAILABLE');
+
+  const unknown = await ask(t, { env: ENV, fetchImpl: replying(503, { detail: { code: '<script>' } }) });
+  assert.equal(unknown.body.error.reason, 'AI_UNAVAILABLE');
+
+  const wrongKey = await ask(t, { env: ENV, fetchImpl: replying(403, { detail: { code: 'FORBIDDEN' } }) });
+  assert.equal(wrongKey.body.error.reason, 'CHATBOT_KEY_MISMATCH');
+});
+
 test('network failure and timeout are distinguished', async (t) => {
   const down = await ask(t, { env: ENV, fetchImpl: async () => { throw new TypeError('fetch failed'); } });
   assert.equal(down.status, 503);

@@ -4,6 +4,7 @@ import type { Pool } from 'pg';
 import { getRankingOptions } from './get-ranking-options';
 import { getTeamRanking } from './get-team-ranking';
 import { getCampusRanking } from './get-campus-ranking';
+import { publicWinner } from '../awards/awards.routes';
 import { sendError, queryInt } from '../shared/http';
 import { currentYearMonth, monthId } from '../shared/time';
 
@@ -35,6 +36,7 @@ export function createPublicRankingsRouter(pool: Pool) {
     return res.status(200).json({
       data: {
         campus: { id: campus.id, name: campus.name },
+        winner: await publicWinner(pool, campus, period),
         month: monthId(period),
         // Public rows deliberately carry a name and score only, never a user ID.
         top: campusRows

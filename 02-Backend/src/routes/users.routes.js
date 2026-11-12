@@ -4,8 +4,6 @@ const loadProjectUser = require('../middleware/load-project-user')
 const requireRole = require('../middleware/require-role')
 const repository = require('../repositories/users.repository')
 const parsePositiveId = require('../utils/parse-positive-id')
-const validateCreateUser = require('../validators/create-user.validator')
-const invitationsRepository = require('../repositories/user-invitations.repository')
 const invitationsService = require('../services/user-invitations.service')
 const validateUpdateUser = require('../validators/update-user.validator')
 const userUpdateService = require('../services/update-user.service')
@@ -189,91 +187,8 @@ router.patch(
     })
   },
 )
-// Creates a member or manager account and attempts to send its Clerk invitation.
-router.post(
-  '/',
-  loadProjectUser,
-  requireRole('organizer'),
-  async (req, res) => {
-    const validation = validateCreateUser(req.body)
-
-    if (validation.error) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_USER_DATA',
-          message: validation.error,
-        },
-      })
-    }
-
-    const result = await invitationsRepository.createPendingUser(
-      validation.value,
-      req.projectUser.id,
-    )
-
-    const failures = {
-      actor_forbidden: {
-        status: 403,
-        code: 'FORBIDDEN',
-        message: 'An active organizer account is required',
-      },
-      email_exists: {
-        status: 409,
-        code: 'EMAIL_ALREADY_EXISTS',
-        message: 'A project account with this email already exists',
-      },
-      team_not_found: {
-        status: 404,
-        code: 'TEAM_NOT_FOUND',
-        message: 'Team not found',
-      },
-      manager_exists: {
-        status: 409,
-        code: 'TEAM_MANAGER_EXISTS',
-        message: 'This team already has a manager',
-      },
-    }
-
-    if (result.outcome !== 'created') {
-      const failure = failures[result.outcome]
-
-      if (!failure) {
-        throw new Error('Unexpected account creation outcome')
-      }
-
-      return res.status(failure.status).json({
-        error: {
-          code: failure.code,
-          message: failure.message,
-        },
-      })
-    }
-
-    let delivery
-
-    try {
-      delivery = await invitationsService.sendUserInvitation(
-        result.user.id,
-        req.projectUser.id,
-      )
-    } catch {
-      delivery = { outcome: 'needs_review' }
-    }
-
-    const sent = ['sent', 'existing_invitation'].includes(delivery.outcome)
-
-    return res.status(201).json({
-      data: {
-        ...result.user,
-        invitationStatus: delivery.invitationStatus || result.user.invitationStatus,
-        deliveryStatus: delivery.outcome,
-      },
-      message: sent
-        ? 'Account created and invitation created at Clerk; inbox delivery is not confirmed'
-        : 'Account created; invitation delivery requires review. Do not create the account again.',
-    })
-  },
-)
+// Accounts are no longer created by hand: people sign up at Clerk and an organizer approves them
+// through /api/registrations, which creates the project account.
 // Reviews reconcile local state without email; explicit resends revoke the previous pending link.
 const invitationMessages = {
   sent: [200, 'Invitation created at Clerk; inbox delivery is not confirmed'],

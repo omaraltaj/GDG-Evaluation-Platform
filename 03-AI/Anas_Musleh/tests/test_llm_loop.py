@@ -50,6 +50,47 @@ def test_system_prompt_has_date_role_and_readonly(monkeypatch):
     assert "token" not in sp.lower()           # the model never sees credentials
 
 
+def test_busy_model_falls_back_to_the_next_one(monkeypatch):
+    from google.genai import errors
+
+    bot, fake = make(monkeypatch)
+    monkeypatch.setattr(llm.config, "GEMINI_MODEL", "busy-model")
+    monkeypatch.setattr(llm.config, "GEMINI_FALLBACK_MODELS", ["spare-model"])
+    bot.model = "busy-model"
+    tried = []
+    real = fake.generate_content
+
+    def generate(model, contents, config):
+        tried.append(model)
+        if model == "busy-model":
+            raise errors.ServerError(503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}})
+        return real(model, contents, config)
+
+    fake.generate_content = generate
+    turn = bot.ask("كم نقطة حصلت هذا الشهر؟")
+    assert turn.answer == "حصلت على 25 نقطة"
+    assert tried == ["busy-model", "spare-model", "spare-model"]   # sticks to the model that answered
+
+
+def test_invalid_key_is_not_retried_on_other_models(monkeypatch):
+    from google.genai import errors
+
+    bot, fake = make(monkeypatch)
+    calls = []
+
+    def generate(model, contents, config):
+        calls.append(model)
+        raise errors.ClientError(403, {"error": {"code": 403, "message": "API key not valid", "status": "PERMISSION_DENIED"}})
+
+    fake.generate_content = generate
+    try:
+        bot.ask("x")
+        raise AssertionError("expected the key error")
+    except errors.ClientError:
+        pass
+    assert len(calls) == 1
+
+
 def test_round_limit(monkeypatch):
     bot, fake = make(monkeypatch)
     monkeypatch.setattr(llm.config, "MAX_TOOL_ROUNDS", 2)
@@ -135,3 +176,30 @@ def test_failure_midway_rolls_back_the_tool_turns_too(monkeypatch):
     with pytest.raises(Exception):
         bot.ask("question")
     assert bot.history == []
+
+
+# ---------- latency settings
+def test_generation_is_tuned_for_fast_factual_answers(monkeypatch):
+    bot, _ = make(monkeypatch)
+    assert bot.config.temperature <= 0.4
+    assert bot.config.max_output_tokens == llm.config.GEMINI_MAX_OUTPUT_TOKENS
+    assert bot.config.thinking_config.thinking_level.value == "MINIMAL"
+    assert bot.config.http_options.timeout <= 15000           # fail fast, then fall back
+
+
+def test_model_rejecting_the_thinking_setting_is_retried_without_it(monkeypatch):
+    from google.genai import errors
+
+    bot, fake = make(monkeypatch)
+    real = fake.generate_content
+    seen = []
+
+    def generate(model, contents, config):
+        seen.append(config.thinking_config)
+        if config.thinking_config is not None:
+            raise errors.ClientError(400, {"error": {"code": 400, "message": "thinking_level is not supported", "status": "INVALID_ARGUMENT"}})
+        return real(model, contents, config)
+
+    fake.generate_content = generate
+    assert bot.ask("x").answer == "حصلت على 25 نقطة"
+    assert seen[0] is not None and seen[1] is None

@@ -1,14 +1,30 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 
+import httpx
 from google import genai
 from google.genai import errors, types
 
 from . import config
 from .prompts import build_system_prompt
 from .tools import TOOL_SPECS, ToolExecutor
+
+logger = logging.getLogger("gdg.chatbot")
+
+# Failures that another model may not share: busy, rate-limited, retired, or server-side errors.
+TRY_NEXT_MODEL = {404, 429, 500, 503, 504}
+
+
+def model_chain() -> list[str]:
+    return list(dict.fromkeys([config.GEMINI_MODEL, *config.GEMINI_FALLBACK_MODELS]))
+
+
+def describe(error: Exception | None) -> str:
+    code = getattr(error, "code", None)
+    return f"{code} {getattr(error, 'status', '')}".strip() if code else type(error).__name__
 
 
 def build_declarations() -> list[types.FunctionDeclaration]:
@@ -42,22 +58,52 @@ class Assistant:
             tools=[types.Tool(function_declarations=build_declarations())],
             # We run the tools ourselves (more control + easier to learn and to audit).
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            temperature=0.2,    # low = more consistent, less creative (good for factual answers)
+            temperature=config.GEMINI_TEMPERATURE,   # low = consistent, factual answers
+            max_output_tokens=config.GEMINI_MAX_OUTPUT_TOKENS,
+            thinking_config=(types.ThinkingConfig(thinking_level=config.GEMINI_THINKING_LEVEL)
+                             if config.GEMINI_THINKING_LEVEL else None),
+            http_options=types.HttpOptions(timeout=config.GEMINI_TIMEOUT_MS),
         )
         self.history: list[types.Content] = []
 
+    def _candidates(self) -> list[str]:
+        """The model that answered last goes first, so one question stays on one model when possible."""
+        ordered = [self.model, *(m for m in model_chain() if m != self.model)]
+        return list(dict.fromkeys(ordered))
+
     def _generate(self):
-        """Call Gemini. 503 = Google is busy, 429 = quota/rate limit: wait and retry a few times, then give up."""
+        """Call Gemini, moving to the next model when one is busy (503), rate-limited (429), retired (404)
+        or too slow; after a full pass with no answer, wait briefly and try the list again."""
         wait = 5
-        for attempt in range(config.LLM_RETRIES):
-            try:
-                return self.client.models.generate_content(model=self.model, contents=self.history, config=self.config)
-            except errors.APIError as e:
-                if getattr(e, "code", None) in (429, 503) and attempt < config.LLM_RETRIES - 1:
-                    time.sleep(wait)
-                    wait *= 2          # 5s, 10s, 20s ...
-                    continue
-                raise
+        last_error: Exception | None = None
+        for attempt in range(max(1, config.LLM_RETRIES)):
+            for model in self._candidates():
+                try:
+                    response = self.client.models.generate_content(model=model, contents=self.history, config=self.config)
+                    self.model = model
+                    return response
+                except errors.APIError as e:
+                    if self._drop_thinking_if_unsupported(e):
+                        return self._generate()
+                    if getattr(e, "code", None) not in TRY_NEXT_MODEL:
+                        raise
+                    last_error = e
+                except httpx.TimeoutException as e:
+                    last_error = e
+                logger.warning("Gemini model %s failed (%s); trying the next one", model, describe(last_error))
+            if attempt < config.LLM_RETRIES - 1:
+                time.sleep(wait)
+                wait *= 2
+        raise last_error
+
+    def _drop_thinking_if_unsupported(self, error: errors.APIError) -> bool:
+        """A model that rejects the thinking setting (400) is retried once with its default instead of failing."""
+        if (getattr(error, "code", None) == 400 and self.config.thinking_config is not None
+                and "think" in str(getattr(error, "message", "") or "").lower()):
+            logger.warning("Model %s rejected thinking_level=%s; using its default", self.model, config.GEMINI_THINKING_LEVEL)
+            self.config.thinking_config = None
+            return True
+        return False
 
     def ask(self, text: str) -> Turn:
         """One question. If ANYTHING fails (Gemini down, quota, network...), the history is rolled back to

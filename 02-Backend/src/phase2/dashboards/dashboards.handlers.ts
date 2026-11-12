@@ -59,6 +59,19 @@ async function memberTotals(pool: Pool, period: YearMonth, teamId: number | null
 
 const percent = (part: number, whole: number) => (whole ? (part / whole) * 100 : 0);
 
+/** Effective (latest revision) 15-item scorecard total per user for a month. */
+async function scorecardTotals(pool: Pool, period: YearMonth) {
+  const result = await pool.query(
+    `SELECT DISTINCT ON (target_user_id) target_user_id AS id, total_score AS total
+     FROM performance_scorecards WHERE year = $1 AND month = $2
+     ORDER BY target_user_id, revision DESC`,
+    [period.year, period.month]
+  );
+  return new Map<number, number>(result.rows.map((row) => [row.id, row.total]));
+}
+
+const average = (values: number[]) => (values.length ? values.reduce((a, b) => a + b, 0) / values.length : null);
+
 export function createDashboardHandlers(pool: Pool) {
   // GET /api/teams/:id/overview: requireTeamAccess has already limited Managers to their own team.
   async function teamOverview(req: Request, res: Response) {
@@ -66,7 +79,8 @@ export function createDashboardHandlers(pool: Pool) {
     if (!team) return sendError(res, 404, 'TEAM_NOT_FOUND', 'Team not found');
 
     const period = currentYearMonth();
-    const [members, ranking, campusResult, managerResult] = await Promise.all([
+    const [scorecards, members, ranking, campusResult, managerResult] = await Promise.all([
+      scorecardTotals(pool, period),
       memberTotals(pool, period, team.id, false),
       getTeamRanking(pool, team.id, period.year, period.month),
       pool.query('SELECT campus_name AS name FROM campuses WHERE campus_id = $1', [team.campusId]),
@@ -86,7 +100,7 @@ export function createDashboardHandlers(pool: Pool) {
       email: m.email,
       role: 'member',
       status: m.isActive ? 'active' : 'disabled',
-      total: m.points,
+      total: scorecards.get(m.id) ?? (null as unknown as number),
       isMe: false
     }));
     if (actor.role === 'manager') {
@@ -209,7 +223,6 @@ export function createDashboardHandlers(pool: Pool) {
   }
 
   // GET /api/dashboard/ratings?campus=all|jenin|ramallah
-  // The 15-item scorecards are out of MVP scope, so performance is empty; activity figures are the real ledger.
   async function organizerDashboard(req: Request, res: Response) {
     const campus = String(req.query.campus ?? 'all');
     if (!['all', 'jenin', 'ramallah'].includes(campus)) {
@@ -217,11 +230,15 @@ export function createDashboardHandlers(pool: Pool) {
     }
 
     const period = currentYearMonth();
-    const [everyone, managers] = await Promise.all([
+    const [everyone, managers, scorecards] = await Promise.all([
       memberTotals(pool, period, null, true),
-      activeManagers(campus)
+      activeManagers(campus),
+      scorecardTotals(pool, period)
     ]);
     const rows = everyone.filter((m) => campus === 'all' || campusKey(m.campusName) === campus);
+    const scoresOf = (list: MemberTotal[]) =>
+      list.map((m) => scorecards.get(m.id)).filter((score): score is number => score !== undefined);
+    const rated = scoresOf(rows);
     const everyoneTotal = everyone.reduce((sum, m) => sum + m.points, 0);
     const scopePoints = rows.reduce((sum, m) => sum + m.points, 0);
 
@@ -235,7 +252,11 @@ export function createDashboardHandlers(pool: Pool) {
           ramallah: countCampus(rows, 'ramallah')
         },
         managers,
-        performance: { total: 0, ratedCount: 0, average: 0 },
+        performance: {
+          total: rated.reduce((sum, score) => sum + score, 0),
+          ratedCount: rated.length,
+          average: average(rated) ?? 0
+        },
         activities: {
           points: scopePoints,
           count: rows.reduce((sum, m) => sum + m.entries, 0),
@@ -247,7 +268,7 @@ export function createDashboardHandlers(pool: Pool) {
           name: t.name,
           campus: campusKey(t.campusName),
           memberCount: t.count,
-          performanceAverage: null,
+          performanceAverage: average(scoresOf(rows.filter((m) => m.teamId === t.id))),
           activityPoints: t.points,
           activityPercentage: percent(t.points, everyoneTotal)
         })),
@@ -257,7 +278,7 @@ export function createDashboardHandlers(pool: Pool) {
             name: m.name,
             campus: campusKey(m.campusName),
             teams: [String(m.teamId)],
-            performance: null,
+            performance: scorecards.get(m.id) ?? null,
             activityPoints: m.points,
             activityPercentage: percent(m.points, everyoneTotal),
             activityCount: m.entries
@@ -267,19 +288,81 @@ export function createDashboardHandlers(pool: Pool) {
     });
   }
 
-  // GET /api/activities: the activities module is out of MVP scope, so this is honestly empty.
-  async function activities(req: Request, res: Response) {
-    if (req.query.month !== undefined && !parseMonthId(req.query.month)) {
-      return sendError(res, 400, 'INVALID_MONTH', 'Month must be YYYY-MM');
+  // GET /api/ratings/ledger?month&campus&teamId&kind: the read-only point ledger, newest first.
+  // Team and campus are the ones the member belonged to when the points were recorded.
+  async function pointsLedger(req: Request, res: Response) {
+    const { month = '', campus = '', teamId = '', kind = '' } = req.query as Record<string, string>;
+    const period = month === '' ? null : parseMonthId(month);
+    if (
+      (month !== '' && !period) ||
+      !['', 'jenin', 'ramallah'].includes(campus) ||
+      !/^(|[1-9]\d{0,9})$/.test(teamId) ||
+      !['', 'performance', 'activity', 'legacy'].includes(kind)
+    ) {
+      return sendError(res, 400, 'INVALID_LEDGER_QUERY', 'Invalid ledger filters');
     }
+
+    // Ledger rows are point entries; performance scorecards and legacy types are not listed here.
+    if (kind === 'performance' || kind === 'legacy') return res.status(200).json({ data: [] });
+
+    const bounds = periodBounds(period?.year ?? null, period?.month ?? null);
+    const [entries, closed] = await Promise.all([
+      pool.query(
+        `SELECT p.entry_id::text AS id, p.user_id::text AS "userId", u.full_name AS "userName",
+                p.points, p.activity_name AS label, p.reason, p.effective_at AS "effectiveAt",
+                actor.full_name AS "actorName", c.campus_name AS "campusName",
+                t.team_id::text AS "teamId", t.team_name AS "teamName",
+                to_char(p.effective_at AT TIME ZONE 'Asia/Hebron', 'YYYY-MM') AS month
+         FROM point_entries p
+         JOIN users u ON u.user_id = p.user_id
+         JOIN users actor ON actor.user_id = p.performed_by_user_id
+         LEFT JOIN LATERAL (
+           SELECT h.team_id
+           FROM assignment_history h
+           WHERE h.user_id = p.user_id
+             AND p.effective_at >= h.effective_from
+             AND (h.effective_to IS NULL OR p.effective_at < h.effective_to)
+           ORDER BY h.effective_from DESC
+           LIMIT 1
+         ) assignment ON TRUE
+         LEFT JOIN teams t ON t.team_id = COALESCE(assignment.team_id, u.team_id)
+         LEFT JOIN campuses c ON c.campus_id = t.campus_id
+         WHERE ${instantInPeriodSql('p.effective_at', 1, 2)}
+           AND ($3::int IS NULL OR t.team_id = $3)
+           AND ($4 = '' OR LOWER(c.campus_name) = $4)
+         ORDER BY p.effective_at DESC, p.entry_id DESC
+         LIMIT 1000`,
+        [bounds.start, bounds.end, teamId === '' ? null : Number(teamId), campus]
+      ),
+      pool.query(
+        `SELECT entity_id AS id FROM audit_logs
+         WHERE action = 'MONTHLY_RANKINGS_PUBLISHED' AND entity_name = 'monthly_rankings'`
+      )
+    ]);
+    const closedMonths = new Set(closed.rows.map((row) => row.id));
+
     return res.status(200).json({
-      data: {
-        month: req.query.month ?? monthId(currentYearMonth()),
-        everyoneTotal: 0,
-        rows: []
-      }
+      data: entries.rows.map((row) => ({
+        id: `activity:${row.id}`,
+        userId: row.userId,
+        userName: row.userName,
+        campus: row.campusName ? campusKey(row.campusName) : '',
+        teamIds: row.teamId ? [row.teamId] : [],
+        teamsLabel: row.teamName ?? '—',
+        month: row.month,
+        ts: row.effectiveAt.getTime(),
+        type: 'activity',
+        performance: null,
+        activityPoints: row.points,
+        legacyPoints: null,
+        label: row.label,
+        reason: row.reason,
+        actorName: row.actorName,
+        revision: null,
+        archived: closedMonths.has(row.month)
+      }))
     });
   }
 
-  return { teamOverview, organizerOverview, organizerDashboard, activities };
+  return { teamOverview, organizerOverview, organizerDashboard, pointsLedger };
 }

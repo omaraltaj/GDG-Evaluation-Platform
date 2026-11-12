@@ -9,16 +9,9 @@ import { Field, Select } from "../ui/Form.jsx";
 import { Button } from "../ui/Primitives.jsx";
 import { tr } from "../../i18n/index.js";
 
-const genPassword = () => {
-  const ch = "abcdefghjkmnpqrstuvwxyz23456789";
-  return Array.from(
-    { length: 8 },
-    () => ch[Math.floor(Math.random() * ch.length)],
-  ).join("");
-};
-
 /**
- * Add / edit a member, manager or organizer.
+ * Edit a member, manager or organizer. New accounts come only from approved
+ * self-registration requests (organizer/Registrations.jsx), never from this dialog.
  * kind: 'member' | 'manager' | 'user' (organizer picks the role himself).
  * A Manager acting here is locked to "Member in my team".
  */
@@ -41,7 +34,6 @@ export default function UserDialog({
     campus: x ? x.campus : fixedTeam ? me.campus : "jenin",
     role: x ? x.role : kind === "manager" ? "manager" : "member",
     teams: x ? [...x.teams] : fixedTeam ? [fixedTeam] : [],
-    password: "",
     photo: x?.photo || null,
   }));
   const [err, setErr] = useState("");
@@ -77,8 +69,7 @@ export default function UserDialog({
         role: f.role,
         teams: f.role === "organizer" ? [] : f.teams,
       };
-      if (x) await usersApi.updateUser(x.id, body);
-      else await usersApi.createUser({ ...body, password: f.password });
+      await usersApi.updateUser(x.id, body);
       toast.success(x ? tr("تم حفظ التعديلات") : tr("تمت الإضافة"));
       onDone && onDone();
       onClose();
@@ -195,26 +186,6 @@ export default function UserDialog({
           />
         )}
       </div>
-      {!x && (
-        <Field label={tr("كلمة مرور مؤقتة")}>
-          {(id) => (
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                id={id}
-                type="text"
-                dir="ltr"
-                style={{ textAlign: "start" }}
-                placeholder={tr("6 أحرف على الأقل")}
-                value={f.password}
-                onChange={(e) => set("password", e.target.value)}
-              />
-              <Button onClick={() => set("password", genPassword())}>
-                {tr("توليد")}
-              </Button>
-            </div>
-          )}
-        </Field>
-      )}
       {fixedTeam && (
         <p className="hint">{tr("يُضاف العضو إلى فريقك فقط بدور Member.")}</p>
       )}
